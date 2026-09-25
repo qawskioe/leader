@@ -1,0 +1,10 @@
+{
+  "day_seconds": 86400.0,
+  "forget_threshold": 0.05,
+  "permanent_importance": 0.9,
+  "recall_growth": 1.15,
+  "max_half_life_days": 1825.0,
+  "half_life_days": {"heard": 3.0, "reflection": 7.0, "action": 3.0, "landmark": 90.0, "skill": 180.0, "fact": 365.0},
+  "relationship_half_life_days": 180.0,
+  "relationship_forget_threshold": 0.1
+}

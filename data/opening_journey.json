@@ -1,0 +1,101 @@
+{
+  "description": "开场经历：众人沿林间来路进入山洞，经过一片有果树的区域，随身带来的两个篮子刚放在洞口，洞内右侧作为物资暂放处。不是实时世界查询。",
+  "landmarks": [
+    {
+      "id": "storage",
+      "kind": "storage",
+      "position": [
+        5.4,
+        0,
+        4.2
+      ],
+      "available": true,
+      "source": "抵达时共同选定的物资暂放处，尚未核对现存食物",
+      "extra": {}
+    },
+    {
+      "id": "basket/1",
+      "kind": "basket",
+      "position": [
+        -2.1,
+        0.31,
+        21.0
+      ],
+      "available": true,
+      "source": "自己一行带来的篮子，抵达时放在洞口",
+      "extra": {}
+    },
+    {
+      "id": "basket/2",
+      "kind": "basket",
+      "position": [
+        -3.0,
+        0.3,
+        21.5
+      ],
+      "available": true,
+      "source": "自己一行带来的篮子，抵达时放在洞口",
+      "extra": {}
+    },
+    {
+      "id": "arrival_path",
+      "kind": "route",
+      "position": [
+        0,
+        0.32,
+        18
+      ],
+      "available": true,
+      "source": "刚走过的洞口来路",
+      "extra": {}
+    },
+    {
+      "id": "arrival_fruit_area",
+      "kind": "forage_area",
+      "position": [
+        -9,
+        0.4,
+        48
+      ],
+      "available": true,
+      "source": "逃难来时沿途看到的果树区域，尚未确认当前果实数量和成熟度",
+      "extra": {}
+    },
+    {
+      "id": "water_source",
+      "kind": "water_source",
+      "position": [
+        20,
+        -0.56,
+        64
+      ],
+      "available": true,
+      "source": "逃难途中见过的水源，尚未重新核实",
+      "extra": {}
+    },
+    {
+      "id": "water_bag/1",
+      "kind": "water_bag",
+      "position": [
+        3.6,
+        0.3,
+        7
+      ],
+      "available": true,
+      "source": "随行带来的空皮水袋，抵达时放在营地",
+      "extra": {}
+    },
+    {
+      "id": "water_bag/2",
+      "kind": "water_bag",
+      "position": [
+        4.2,
+        0.3,
+        7
+      ],
+      "available": true,
+      "source": "随行带来的空皮水袋，抵达时放在营地",
+      "extra": {}
+    }
+  ]
+}

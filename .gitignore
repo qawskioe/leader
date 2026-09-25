@@ -1,0 +1,21 @@
+.godot/
+*.blend1
+*.blend2
+__pycache__/
+work/
+
+# 本机环境、凭据与运行产物
+.venv/
+venv/
+runtime/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+*.py[cod]
+.DS_Store
+Thumbs.db
+
+/assets/

@@ -1,0 +1,8 @@
+{
+  "protocol": "responses",
+  "url": "https://YOUR-PROVIDER.example/v1/responses",
+  "key": "REPLACE_LOCALLY",
+  "model": "YOUR_AVAILABLE_MODEL",
+  "reasoning_effort": "medium",
+  "total_timeout_seconds": 120
+}

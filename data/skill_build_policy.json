@@ -1,0 +1,5 @@
+{
+  "attempts": 3,
+  "budget_seconds": 660,
+  "host_grace_seconds": 60
+}

@@ -1,0 +1,53 @@
+[
+  {
+    "asset": "rock_face_03",
+    "source": "https://polyhaven.com/a/rock_face_03",
+    "license": "CC0-1.0",
+    "files": [
+      {
+        "file": "rock_face_03_diffuse.jpg",
+        "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rock_face_03/rock_face_03_diff_1k.jpg",
+        "md5": "e4c34abb1aad5befe12754fad507147a"
+      },
+      {
+        "file": "rock_face_03_nor_gl.jpg",
+        "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rock_face_03/rock_face_03_nor_gl_1k.jpg",
+        "md5": "cbd30858439ece391480c5e67e09de89"
+      }
+    ]
+  },
+  {
+    "asset": "mossy_rock",
+    "source": "https://polyhaven.com/a/mossy_rock",
+    "license": "CC0-1.0",
+    "files": [
+      {
+        "file": "mossy_rock_diffuse.jpg",
+        "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/mossy_rock/mossy_rock_diff_1k.jpg",
+        "md5": "a57fbbf55269eb64f8d40708fe3af26c"
+      },
+      {
+        "file": "mossy_rock_nor_gl.jpg",
+        "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/mossy_rock/mossy_rock_nor_gl_1k.jpg",
+        "md5": "59370f9b3d068271c2bccfb414dc325b"
+      }
+    ]
+  },
+  {
+    "asset": "brown_mud_dry",
+    "source": "https://polyhaven.com/a/brown_mud_dry",
+    "license": "CC0-1.0",
+    "files": [
+      {
+        "file": "brown_mud_dry_diffuse.jpg",
+        "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brown_mud_dry/brown_mud_dry_diff_1k.jpg",
+        "md5": "0c0ad82fec60f091690c69c23657cb74"
+      },
+      {
+        "file": "brown_mud_dry_nor_gl.jpg",
+        "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brown_mud_dry/brown_mud_dry_nor_gl_1k.jpg",
+        "md5": "a842517bea5187ccbceb69fd26629d1e"
+      }
+    ]
+  }
+]

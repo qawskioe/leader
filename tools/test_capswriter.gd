@@ -1,0 +1,23 @@
+extends SceneTree
+const Caps = preload("res://scripts/voice/capswriter_client.gd")
+const Mic = preload("res://scripts/voice/microphone.gd")
+
+func _initialize() -> void:
+	var wav := Mic.encode_wav(PackedFloat32Array([-1.0,0.0,0.5]),16000)
+	var encoded := Caps.make_payload(wav,"test")
+	assert(encoded.ok)
+	var floats := Marshalls.base64_to_raw(encoded.payload.data)
+	assert(floats.size()==12 and floats.decode_float(0)<-0.99 and floats.decode_float(4)==0.0 and absf(floats.decode_float(8)-0.5)<0.001)
+	assert(encoded.payload.is_final and encoded.payload.seg_duration>16.0)
+	var context := Caps.build_context(PackedStringArray(["石头","小花","大山","月亮"]),[{"speaker":"玩家","text":"旧记录"},{"speaker":"玩家","text":"你饿吗"},{"speaker":"大山","text":"我不饿"},{"speaker":"玩家","text":"字".repeat(900)}])
+	assert(context.contains("石头") and context.contains("我不饿") and not context.contains("旧记录"))
+	assert(context.length()<=Caps.MAX_CONTEXT_CHARS)
+	assert(Caps.make_payload(wav,"context-test",context).payload.context==context)
+	assert(not Caps.make_payload(wav,"long","字".repeat(501)).ok)
+	assert(not Caps.parse_result("broken","test").ok)
+	assert(not Caps.parse_result('{"task_id":"other","is_final":true,"text":"你好"}',"test").ok)
+	assert(not Caps.parse_result('{"task_id":"test","is_final":true,"text":" "}',"test").ok)
+	assert(Caps.parse_result('{"task_id":"test","is_final":false,"text":"部分"}',"test").pending)
+	assert(Caps.parse_result('{"task_id":"test","is_final":true,"text":"你好"}',"test").text=="你好")
+	print("CAPSWRITER_CONTRACT_PASSED: pcm_conversion, final_boundary, invalid_result, task_isolation, empty_result")
+	quit()

@@ -1,0 +1,7 @@
+{
+  "project_id": "your-google-cloud-project",
+  "account": "your-gcloud-login-account",
+  "gcloud_script": "C:/path/to/google-cloud-sdk/lib/gcloud.py",
+  "trial_credit_confirmed": false,
+  "stop_at_utc": ""
+}

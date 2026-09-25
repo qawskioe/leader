@@ -1,0 +1,6 @@
+{
+  "luau_repository": "https://github.com/luau-lang/luau.git",
+  "luau_commit": "7d5f73364fdbbaa984fa545071630eba73cfea98",
+  "json_header": "https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp",
+  "json_sha256": "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6"
+}
