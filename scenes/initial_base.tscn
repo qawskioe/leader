@@ -4,8 +4,8 @@
 [ext_resource type="PackedScene" path="res://assets/environment/world_cave.glb" id="2"]
 [ext_resource type="PackedScene" path="res://assets/characters/person_v2_01.glb" id="3"]
 [ext_resource type="PackedScene" path="res://assets/characters/person_v2_02.glb" id="4"]
-[ext_resource type="PackedScene" path="res://assets/characters/person_v2_03.glb" id="5"]
-[ext_resource type="PackedScene" path="res://assets/characters/person_v2_04.glb" id="6"]
+[ext_resource type="PackedScene" path="res://assets/characters/person_v2_04.glb" id="5"]
+[ext_resource type="PackedScene" path="res://assets/characters/person_v2_03.glb" id="6"]
 [ext_resource type="Script" path="res://scripts/first_person_controller.gd" id="7"]
 
 [ext_resource type="PackedScene" path="res://assets/environment/world_outdoor_optimized.glb" id="8"]

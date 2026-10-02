@@ -43,7 +43,7 @@ def listening():
 def health():
     key=(RUNTIME/'gateway-key.txt').read_text(encoding='utf-8').strip()
     request=urllib.request.Request(f'http://127.0.0.1:{PORT}/local/status',headers={'Authorization':'Bearer '+key})
-    with urllib.request.urlopen(request,timeout=3) as response:
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request,timeout=3) as response:
         return json.load(response)
 
 def start():

@@ -7,6 +7,20 @@ import luau_builder as builder
 import development_backend
 
 class BuilderTests(unittest.TestCase):
+    def test_status_publish_tolerates_transient_reader(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp);path=folder/'status.json';path.write_text('{"state":"old"}')
+            original=Path.replace;calls=[]
+            def replace(source,target):
+                calls.append(1)
+                if len(calls)<3:
+                    self.assertEqual(json.loads(path.read_text()),{'state':'old'})
+                    raise PermissionError('transient reader')
+                return original(source,target)
+            with patch.object(Path,'replace',replace):builder.write(folder,{'state':'writing','message':'test'})
+            self.assertEqual(json.loads(path.read_text())['state'],'writing')
+            self.assertEqual(len(calls),3)
+
     def setUp(self):
         engine=patch.object(builder,'resolve_godot',return_value='fixture-godot');engine.start();self.addCleanup(engine.stop)
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
@@ -39,6 +53,20 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(len(package['receipt']['development_commit']),40)
         self.assertTrue((self.folder/'workspace/.git').is_dir())
         self.assertEqual((self.folder/'workspace/source.luau').read_text(),self.source)
+
+    def test_revision_continues_draft_but_keeps_accepted_review_baseline(self):
+        original,_,_=builder.candidate(self.value,self.request)
+        self.request['revision']={'ref':'release@old','definition':original,'player_event':{'text':'继续修订'}}
+        draft_source='return function(args) return {ok=false,code="unfinished"} end'
+        draft={'source':draft_source,'candidate_output':dict(self.value,source=draft_source)}
+        def inspect(workspace,*args):
+            self.assertEqual((workspace.root/'source.luau').read_text(),draft_source)
+            self.assertEqual((self.folder/'previous_source.luau').read_text(),self.source)
+            self.assertFalse((self.folder/'package.json').exists())
+            return {'ok':False,'error':'fixture stopped before verification'}
+        with patch.object(development_backend,'ensure_available'),patch.object(builder,'ROOT',self.root),patch.object(builder,'prepare_outcomes'),patch.object(builder,'failed_draft',return_value=draft),patch.object(development_backend,'run',side_effect=inspect):
+            self.assertEqual(builder.execute(self.folder,self.request),1)
+        self.assertFalse((self.folder/'package.json').exists())
 
     def test_failed_review_cannot_publish(self):
         result,_,_=self.execute(passed=False)

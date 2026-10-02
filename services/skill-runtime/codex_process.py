@@ -1,5 +1,5 @@
 """官方Codex执行参数；复用登录，不读取或导出登录凭据。"""
-import os,json,subprocess
+import os,json,subprocess,csv,re
 from pathlib import Path,PurePosixPath,PureWindowsPath
 from development_backend import linux_path
 
@@ -22,6 +22,17 @@ def stop(process):
     else:process.terminate()
     try:process.wait(timeout=5)
     except subprocess.TimeoutExpired:process.kill();process.wait()
+
+def prepare_workspace(workspace):
+    """沙箱子账号新建文件后，宿主仍须能读取验收；授权仅限本次隔离工程。"""
+    if os.name!='nt':return
+    identity=subprocess.run(['whoami.exe','/user','/fo','csv','/nh'],capture_output=True,text=True,timeout=10,creationflags=subprocess.CREATE_NO_WINDOW)
+    if identity.returncode:raise ValueError('无法确认Codex宿主Windows身份')
+    rows=list(csv.reader(identity.stdout.splitlines()))
+    sid=rows[0][-1] if rows else ''
+    if not re.fullmatch(r'S-1-5-[0-9-]+',sid):raise ValueError('Codex宿主Windows SID无效')
+    result=subprocess.run(['icacls.exe',str(workspace.resolve()),'/grant','*'+sid+':(OI)(CI)M'],capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+    if result.returncode:raise ValueError('无法设置本次Codex隔离工程的宿主读取权限')
 
 def command(executable,workspace,model,seconds,extra=()):
     windows=native_windows(executable)
@@ -53,6 +64,7 @@ def text(prompt,config,images=None):
     import tempfile,time
     root=Path(__file__).resolve().parent/'runtime/codex-calls';root.mkdir(exist_ok=True)
     folder=Path(tempfile.mkdtemp(prefix='call_',dir=root));output=folder/'result.txt'
+    prepare_workspace(folder)
     extra=['--output-last-message',cli_path(output,config['executable']),'-c','model_reasoning_effort='+json.dumps(config.get('reasoning_effort','medium'))]
     for image in images or []:extra+=['--image',cli_path(image,config['executable'])]
     seconds=config.get('total_timeout_seconds',180);started=time.monotonic()

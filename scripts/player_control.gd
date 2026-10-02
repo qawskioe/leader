@@ -3,7 +3,10 @@ extends Node
 const ROOT:="res://services/text-gateway/runtime/player-control/"
 var active:=false
 var elapsed:=0.0
+var virtual_mouse_mode: int=Input.MOUSE_MODE_VISIBLE
 func _ready() -> void:
+	name="PlayerControl"
+	virtual_mouse_mode=Input.mouse_mode
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(ROOT))
 func _process(delta: float) -> void:
 	elapsed+=delta
@@ -23,6 +26,11 @@ func key_event(code: int, down: bool) -> void:
 		else:Input.action_release(actions[code])
 func perform(command: Variant) -> void:
 	var error:=""
+	# 后台测试保留虚拟窗口的捕获/菜单状态；操作仍经正常Input事件与玩家控制器。
+	if not DisplayServer.window_is_focused():Input.mouse_mode=virtual_mouse_mode
+	var player: Node3D=get_parent().survival.scene.get_node("Player")
+	var start_position: Vector3=player.global_position
+	var start_view: Basis=player.get_node("Eyes").global_basis
 	if not command is Dictionary:error="invalid command"
 	else:
 		match command.get("type"):
@@ -68,7 +76,15 @@ func perform(command: Variant) -> void:
 	if focused is LineEdit:
 		for sibling in focused.get_parent().get_children():
 			if sibling is Label and sibling.is_visible_in_tree():input_notice=sibling.text;break
-	f.store_string(JSON.stringify({"id":command.get("id","") if command is Dictionary else "","error":error,"visible_interactables":visible_interactables() if result==OK else [],"interaction_hint":hint.text if result==OK and is_instance_valid(hint) and hint.is_visible_in_tree() else "","capture_error":result,"frame":"frame.png" if result==OK else "","focus":focused.get_class() if focused else "","input_text":focused.text if focused is LineEdit else "","input_notice":input_notice}));f.close()
+	# 仅回报这次操作时玩家自己经历的位移，不暴露地图坐标或视野外目标。
+	var movement: Vector3=start_view.inverse()*(player.global_position-start_position)
+	var response:={"id":command.get("id","") if command is Dictionary else "","error":error,"visible_interactables":visible_interactables() if result==OK else [],"interaction_hint":hint.text if result==OK and is_instance_valid(hint) and hint.is_visible_in_tree() else "","capture_error":result,"frame":"frame.png" if result==OK else "","focus":focused.get_class() if focused else "","input_text":focused.text if focused is LineEdit else "","input_notice":input_notice,"movement":{"distance_m":snappedf(movement.length(),0.01),"right_m":snappedf(movement.x,0.01),"up_m":snappedf(movement.y,0.01),"forward_m":snappedf(-movement.z,0.01)}}
+	f.store_string(JSON.stringify(response));f.close()
+	var history:=FileAccess.open(ROOT+"input_history.jsonl",FileAccess.READ_WRITE if FileAccess.file_exists(ROOT+"input_history.jsonl") else FileAccess.WRITE)
+	assert(history!=null,"无法记录玩家操作验收证据")
+	history.seek_end();history.store_line(JSON.stringify({"time":Time.get_datetime_string_from_system(),"command":command,"result":response}));history.close()
+	virtual_mouse_mode=Input.mouse_mode
+	if not DisplayServer.window_is_focused():Input.mouse_mode=Input.MOUSE_MODE_VISIBLE
 	active=false
 
 func visible_interactables() -> Array:

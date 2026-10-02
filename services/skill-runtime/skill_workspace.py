@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from evidence_index import EvidenceIndex
 
 
 def dump(value):
@@ -22,13 +23,15 @@ class Workspace:
         self.export('source.luau',baseline.pop('source',''),raw=True)
         self.export('skill.json',baseline)
         self.export('reference/sdk.md',sdk,raw=True)
-        self.export('reference/task.json',{'goal_id':request['goal_id'],'creation':request.get('creation',{}),'revision':{k:v for k,v in request.get('revision',{}).items() if k!='definition'},'world_operations':request['world_operations']})
-        self.export('reference/evidence.json',evidence)
-        self.export('reference/previous_failure.json',{k:v for k,v in draft.items() if k not in ('source','candidate_output')})
+        self.export('reference/principles.md',Path(__file__).with_name('authoring_principles.md').read_text(encoding='utf-8'),raw=True)
+        self.evidence_index=EvidenceIndex(self.export)
+        self.export('reference/task.json',self.evidence_index.pack({'goal_id':request['goal_id'],'creation':request.get('creation',{}),'revision':{k:v for k,v in request.get('revision',{}).items() if k!='definition'},'world_operations':request['world_operations']}))
+        self.export('reference/evidence.json',self.evidence_index.pack(evidence))
+        self.export('reference/previous_failure.json',self.evidence_index.pack({k:v for k,v in draft.items() if k not in ('source','candidate_output')}))
         for key,value in request['character_context'].items():
             # 文件名来自宿主合同，不来自模型路径。
             if not key.replace('_','').isalnum():raise ValueError('invalid context section')
-            self.export('reference/context/'+key+'.json',value)
+            self.export('reference/context/'+key+'.json',self.evidence_index.pack(value,key))
         owned=[]
         for index,(ref,definition) in enumerate(request['owned_skills'].items()):
             prefix=f'reference/owned/{index}'

@@ -1,5 +1,6 @@
 extends Node
-## 第一档：模型仅给意图；库存、路线、物品转移、消费和饥饿均由程序处理。
+const MOTION_STOP_BLEND_SECONDS:=0.2
+## 世界模拟：技能提出操作，程序处理实际移动、库存、物品转移、消费和需求。
 signal action_result(result: Dictionary)
 signal state_changed
 signal skill_motion_result(person_id: String, result: Dictionary)
@@ -114,13 +115,25 @@ func _physics_process(delta: float) -> void:
 		var body: CharacterBody3D=actor.body
 		store.people[id].needs.thirst=clampf(store.people[id].needs.thirst+0.035*delta,0,100)
 		store.people[id].needs.hunger=clampf(store.people[id].needs.hunger+hunger_rate*delta,0,100)
+		var before_motion: Transform3D=body.global_transform
 		if actor.stage=="skill_moving": _walk(id,delta)
 		else:
 			body.velocity.x=0
 			body.velocity.z=0
 		if not body.is_on_floor(): body.velocity.y-=9.8*delta
 		else: body.velocity.y=0
+		if actor.has("motion_guard"):
+			var proposed:=body.global_transform;proposed.origin+=body.velocity*delta
+			var checked: Dictionary=actor.motion_guard.call(before_motion,proposed)
+			if not checked.ok:
+				body.global_transform=before_motion;body.velocity=Vector3.ZERO
+				_finish_skill_motion(id,false,"持物移动受阻",checked)
 		GroundMotion.move(body,delta)
+		if actor.has("motion_guard"):
+			var checked: Dictionary=actor.motion_guard.call(before_motion,body.global_transform)
+			if not checked.ok:
+				body.global_transform=before_motion;body.velocity=Vector3.ZERO
+				_finish_skill_motion(id,false,"持物移动受阻",checked)
 		_sync(id)
 	if _clock>=1.0:
 		_clock=0
@@ -138,7 +151,7 @@ func _walk(id: String, delta: float) -> void:
 	var direction:=target-body.global_position
 	direction.y=0
 	# 技能已在目的地预留站位距离；再提前0.2米结束会使近距离抓握够不到。
-	var arrival_tolerance:=0.04 if actor.stage=="skill_moving" else 0.20
+	var arrival_tolerance:=0.01 if actor.get("keep_motion_heading",false) else (0.04 if actor.stage=="skill_moving" else 0.20)
 	if direction.length()<arrival_tolerance:
 		actor.step+=1
 		if actor.step>=actor.path.size():
@@ -149,12 +162,14 @@ func _walk(id: String, delta: float) -> void:
 	if actor.stalled>5:
 		_finish_skill_motion(id,false,"路线被挡住，未能到达所选目标")
 		return
+	# 精细站位必须真正到点；末帧减速避免固定步长越过目标后反复折返。
+	var speed:=minf(move_speed,direction.length()/maxf(delta,.0001))
 	direction=direction.normalized()
-	body.velocity.x=direction.x*move_speed
-	body.velocity.z=direction.z*move_speed
-	body.rotation.y=lerp_angle(body.rotation.y,atan2(direction.x,direction.z),minf(delta*8,1))
+	body.velocity.x=direction.x*speed
+	body.velocity.z=direction.z*speed
+	if not actor.get("keep_motion_heading",false):body.rotation.y=lerp_angle(body.rotation.y,atan2(direction.x,direction.z),minf(delta*8,1))
 
-func _finish_skill_motion(id: String, success: bool, message: String) -> void:
+func _finish_skill_motion(id: String, success: bool, message: String, details: Dictionary={}) -> void:
 	var actor: Dictionary=actors[id]
 	var contacts: Array=[]
 	if not success:
@@ -163,10 +178,16 @@ func _finish_skill_motion(id: String, success: bool, message: String) -> void:
 			if absf(collision.get_normal().y)>=GroundMotion.MIN_FLOOR_Y: continue
 			contacts.append({"position":collision.get_position(),"normal":collision.get_normal()})
 			if contacts.size()==4: break
+	actor.erase("motion_guard");actor.erase("keep_motion_heading")
 	actor.stage="skill_wait";actor.path=PackedVector3Array();actor.body.velocity=Vector3.ZERO
-	_animation(actor,"Idle")
+	# 行走停下不应先reset_bone_poses；让动画混合保留当前身体姿态。
+	# 下一段技能可以接管此过渡中的姿态，整项技能结束仍由宿主连续回位。
+	actor.animation.get_animation("Idle").loop_mode=Animation.LOOP_LINEAR
+	actor.animation.play("Idle",MOTION_STOP_BLEND_SECONDS)
 	# 世界坐标仅在宿主信号中流转，由技能适配器换算到本次观察坐标系再交付。
-	skill_motion_result.emit(id,{"ok":success,"code":"arrived" if success else "movement_failed","message":message,"world_contacts":contacts})
+	var result: Dictionary={"ok":success,"code":"arrived" if success else "movement_failed","message":message,"world_contacts":contacts}
+	result.merge(details,true)
+	skill_motion_result.emit(id,result)
 
 func _sync(id: String) -> void:
 	var person: Dictionary=store.people[id]

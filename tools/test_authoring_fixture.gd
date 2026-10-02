@@ -19,7 +19,7 @@ func run() -> void:
 	var folder:="res://services/skill-runtime/runtime/jobs/job_migration_fixture"
 	assert(DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))==OK)
 	var context: Dictionary=sim.space.prepare_context("person_003",store.context_for("person_003"),sim.space.capture("person_003"))
-	context.body_control=preload("res://scripts/skills/body_motor.gd").describe(actor.skeleton)
+	context.interaction_rules={"mode":"simplified","range_m":1.6}
 	var request:={"goal_id":"observe_then_drink","revision":{},"creation":{"goal":"先观察当前周围，再喝一口水，身体动作必须实际发生","player_event":{"id":"migration_fixture","kind":"speech_intent","speaker":"player","text":"大山，学会先观察周围，再喝一口水"}},"owned_skills":owned,"character_context":context,"world_operations":preload("res://scripts/skills/luau_contract.gd").OPERATIONS,"verification_snapshot":preload("res://scripts/skills/verification_snapshot.gd").capture(sim,"person_003")}
 	var program:=preload("res://scripts/skills/luau_contract.gd").make_program('return function(args, context) local seen=world.request("perceive",{}) if not seen.ok then return seen end return skills.call("drink",{},context) end',["perceive"])
 	var definition:={"id":request.goal_id,"name":"观察后喝水","description":"观察当前周围再喝水","parameters":{},"parameter_kinds":{},"dependencies":{"drink":drink},"program_json":JSON.stringify(program)}

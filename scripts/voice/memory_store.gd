@@ -21,45 +21,58 @@ func initialize(file: String, people: Array, fresh: bool=false) -> String:
 	short_events={};tasks={};observations={};consolidated_day=0;last_consolidation={}
 	for id in people: records[id]={};contacts[id]={};short_events[id]=[];observations[id]={}
 	if not fresh and path!="" and FileAccess.file_exists(path):
-		var data: Variant=JSON.parse_string(FileAccess.get_file_as_string(path))
-		if not data is Dictionary or data.get("schema")!=1 or not data.get("records") is Dictionary or not data.get("contacts") is Dictionary or not data.get("clock") is float and not data.get("clock") is int: return "人物记忆文件格式错误"
-		for id in data.records:
-			if not records.has(id) or not data.records[id] is Dictionary: return "人物记忆归属错误"
-			for key in data.records[id]:
-				var item: Variant=data.records[id][key]
-				if not item is Dictionary or item.get("id")!=key or not item.get("kind") in policy.half_life_days or not item.get("data") is Dictionary or not item.get("importance") is float and not item.get("importance") is int: return "记忆条目损坏"
-				for number in ["created_at","updated_at","last_recalled","recall_count","half_life_days"]:
-					if not (item.get(number) is int or item.get(number) is float) or not is_finite(item[number]) or item[number]<0: return "记忆时间或衰退参数损坏"
-				if item.half_life_days<=0 or not item.get("permanent") is bool or not is_finite(item.importance) or item.importance<0 or item.importance>1: return "记忆保留参数损坏"
-				if item.has("consolidated_at") and (not (item.consolidated_at is float or item.consolidated_at is int) or not is_finite(item.consolidated_at) or item.consolidated_at< -1): return "记忆整理时间损坏"
-			records[id]=data.records[id]
-		for id in data.contacts:
-			if not contacts.has(id) or not data.contacts[id] is Dictionary: return "关系记忆归属错误"
-			for other in data.contacts[id]:
-				var tie: Variant=data.contacts[id][other]
-				if not tie is Dictionary: return "关系记录损坏"
-				for number in ["last_contact","familiarity"]:
-					if not (tie.get(number) is int or tie.get(number) is float) or not is_finite(tie[number]) or tie[number]<0: return "关系参数损坏"
-			contacts[id]=data.contacts[id]
-		if not is_finite(data.clock) or data.clock<0: return "记忆时钟损坏"
-		clock=data.clock;loaded=true
-		consolidated_day=int(clock/float(policy.day_seconds))
-		if data.has("short_term"):
-			var short: Variant=data.short_term
-			if not short is Dictionary or not short.get("events") is Dictionary or not short.get("tasks") is Dictionary or not short.get("observations") is Dictionary or not short.get("day") is int and not short.get("day") is float: return "短期记忆文件损坏"
-			for id in short.events:
-				if not records.has(id) or not short.events[id] is Array or not short.observations.get(id) is Dictionary: return "短期记忆归属或内容错误"
-				for entry in short.events[id]:
-					if not entry is Dictionary or not entry.get("event") is Dictionary or not entry.event.get("id") is String: return "短期事件损坏"
-				for entry in short.observations[id].values():
-					if not entry is Dictionary or not entry.get("position") is Array or entry.position.size()!=3: return "短期观察损坏"
-				short_events[id]=short.events[id];observations[id]=short.observations[id]
-			for id in short.tasks:
-				if not records.has(id) or not short.tasks[id] is Dictionary or not short.tasks[id].get("request") is Dictionary: return "短期任务损坏"
-			tasks=short.tasks;consolidated_day=int(short.day)
-			last_consolidation=short.get("last_consolidation",{})
+		var parser:=JSON.new()
+		if parser.parse(FileAccess.get_file_as_string(path))!=OK:return "人物记忆文件不是有效JSON"
+		var error:=load_data(parser.data,people)
+		if not error.is_empty():return error
 	next_sweep=clock+60;dirty=fresh
 	prune()
+	return ""
+
+func export_data() -> Dictionary:
+	return {"schema":1,"clock":clock,"records":records,"contacts":contacts,"short_term":{"events":short_events,"tasks":tasks,"observations":observations,"day":consolidated_day,"last_consolidation":last_consolidation}}.duplicate(true)
+
+func load_data(data: Variant, people: Array) -> String:
+	var destination:=path
+	initialize("",people,true)
+	path=destination
+	if not data is Dictionary or data.get("schema")!=1 or not data.get("records") is Dictionary or not data.get("contacts") is Dictionary or not data.get("clock") is float and not data.get("clock") is int: return "人物记忆文件格式错误"
+	for id in data.records:
+		if not records.has(id) or not data.records[id] is Dictionary: return "人物记忆归属错误"
+		for key in data.records[id]:
+			var item: Variant=data.records[id][key]
+			if not item is Dictionary or item.get("id")!=key or not item.get("kind") in policy.half_life_days or not item.get("data") is Dictionary or not item.get("importance") is float and not item.get("importance") is int: return "记忆条目损坏"
+			for number in ["created_at","updated_at","last_recalled","recall_count","half_life_days"]:
+				if not (item.get(number) is int or item.get(number) is float) or not is_finite(item[number]) or item[number]<0: return "记忆时间或衰退参数损坏"
+			if item.half_life_days<=0 or not item.get("permanent") is bool or not is_finite(item.importance) or item.importance<0 or item.importance>1: return "记忆保留参数损坏"
+			if item.has("consolidated_at") and (not (item.consolidated_at is float or item.consolidated_at is int) or not is_finite(item.consolidated_at) or item.consolidated_at< -1): return "记忆整理时间损坏"
+		records[id]=data.records[id]
+	for id in data.contacts:
+		if not contacts.has(id) or not data.contacts[id] is Dictionary: return "关系记忆归属错误"
+		for other in data.contacts[id]:
+			var tie: Variant=data.contacts[id][other]
+			if not tie is Dictionary: return "关系记录损坏"
+			for number in ["last_contact","familiarity"]:
+				if not (tie.get(number) is int or tie.get(number) is float) or not is_finite(tie[number]) or tie[number]<0: return "关系参数损坏"
+		contacts[id]=data.contacts[id]
+	if not is_finite(data.clock) or data.clock<0: return "记忆时钟损坏"
+	clock=data.clock;loaded=true
+	consolidated_day=int(clock/float(policy.day_seconds))
+	if data.has("short_term"):
+		var short: Variant=data.short_term
+		if not short is Dictionary or not short.get("events") is Dictionary or not short.get("tasks") is Dictionary or not short.get("observations") is Dictionary or not short.get("day") is int and not short.get("day") is float: return "短期记忆文件损坏"
+		for id in short.events:
+			if not records.has(id) or not short.events[id] is Array or not short.observations.get(id) is Dictionary: return "短期记忆归属或内容错误"
+			for entry in short.events[id]:
+				if not entry is Dictionary or not entry.get("event") is Dictionary or not entry.event.get("id") is String: return "短期事件损坏"
+			for entry in short.observations[id].values():
+				if not entry is Dictionary or not entry.get("position") is Array or entry.position.size()!=3: return "短期观察损坏"
+			short_events[id]=short.events[id];observations[id]=short.observations[id]
+		for id in short.tasks:
+			if not records.has(id) or not short.tasks[id] is Dictionary or not short.tasks[id].get("request") is Dictionary: return "短期任务损坏"
+		tasks=short.tasks;consolidated_day=int(short.day)
+		last_consolidation=short.get("last_consolidation",{})
+	next_sweep=clock+60;dirty=false
 	return ""
 
 func put(person: String, kind: String, source_id: String, data: Dictionary, importance: float=0.5, permanent: bool=false) -> String:
@@ -190,7 +203,7 @@ func save() -> String:
 	if DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path).get_base_dir())!=OK: return "无法创建记忆目录"
 	var file:=FileAccess.open(path+".tmp",FileAccess.WRITE)
 	if file==null: return "无法保存人物记忆"
-	file.store_string(JSON.stringify({"schema":1,"clock":clock,"records":records,"contacts":contacts,"short_term":{"events":short_events,"tasks":tasks,"observations":observations,"day":consolidated_day,"last_consolidation":last_consolidation}}));file.close()
+	file.store_string(JSON.stringify(export_data()));file.close()
 	if DirAccess.rename_absolute(ProjectSettings.globalize_path(path+".tmp"),ProjectSettings.globalize_path(path))!=OK: return "无法替换人物记忆文件"
 	dirty=false
 	return ""

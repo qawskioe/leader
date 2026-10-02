@@ -9,15 +9,9 @@ return function(args, context)
         if not arrived.ok then return arrived end
     end
     local moved = world.request("move_held", {object=args.object, target=args.target, seconds=1.0})
-    if not moved.ok and moved.code == "moved_to_surface" then
-        local crouch = world.request("pose", {pose={lower_hips=0.55, Spine={x=60,y=0,z=0}}, seconds=0.6})
-        if not crouch.ok then return crouch end
-        moved = world.request("move_held", {object=args.object, target=args.target, seconds=1.0})
-    end
     if not moved.ok then return moved end
     local released = world.request("release", {object=args.object})
     if not released.ok then return released end
     local result = world.request("check_placement", {object=args.object, target=args.target})
-    world.request("relax", {seconds=0.6})
     return result
 end

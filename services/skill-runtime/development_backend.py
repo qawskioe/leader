@@ -2,6 +2,26 @@
 import json,os,re,subprocess,sys,time,threading,queue
 from pathlib import Path,PureWindowsPath
 
+CODEX_WINDOWS_COMPANIONS=('codex-code-mode-host.exe','codex-command-runner.exe','codex-windows-sandbox-setup.exe')
+
+
+def resolve_codex_directory(directory):
+    """显式选择桌面版bin目录时按CLI版本解析；不猜路径、不改变登录或供应商。"""
+    candidates=[]
+    for executable in [directory/'codex.exe',*directory.glob('*/codex.exe')]:
+        if not executable.is_file() or any(not (executable.parent/name).is_file() for name in CODEX_WINDOWS_COMPANIONS):continue
+        try:
+            result=subprocess.run([str(executable),'--version'],capture_output=True,text=True,timeout=5,
+                                  creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        except (OSError,subprocess.TimeoutExpired):continue
+        match=re.fullmatch(r'codex-cli (\d+)\.(\d+)\.(\d+)(?:-([^\s]+))?\s*',result.stdout)
+        if result.returncode or not match:continue
+        # 同一正式版本优先于其预发布版本；版本完全相同时使用文件时间打破平局。
+        version=tuple(int(match[i]) for i in (1,2,3))+(not bool(match[4]),)
+        candidates.append((version,executable.stat().st_mtime_ns,str(executable)))
+    if not candidates:raise ValueError('所选Codex目录没有工具组件完整且能返回有效版本的codex.exe')
+    return max(candidates)[2]
+
 
 def read_selection(root):
     path=root/'services/skill-runtime/runtime/development_backend.json'
@@ -18,6 +38,8 @@ def read_selection(root):
             raise ValueError('本机执行器需要绝对路径')
         if value['runtime']=='local' and windows and value['backend']!='codex':
             raise ValueError('Windows原生执行目前仅支持Codex')
+        if value['runtime']=='local' and value['backend']=='codex' and Path(value['executable']).is_dir():
+            value['executable']=resolve_codex_directory(Path(value['executable']))
     return value
 
 
@@ -25,6 +47,8 @@ def ensure_available(selection):
     if selection['backend']=='disabled':return
     if os.name=='nt' and selection['runtime']=='local':
         if not Path(selection['executable']).is_file():raise ValueError('本机Codex可执行文件不存在')
+        missing=[name for name in CODEX_WINDOWS_COMPANIONS if not (Path(selection['executable']).parent/name).is_file()]
+        if missing:raise ValueError('本机Codex开发工具组件缺失：'+', '.join(missing))
     elif os.name=='nt':
         for target in ([selection['executable'],'/usr/bin/bwrap'] if selection['backend']=='opencode' else [selection['executable']]):
             result=subprocess.run(['wsl.exe','--exec','test','-x',target],capture_output=True,timeout=15,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))

@@ -17,6 +17,8 @@ var label: Label
 var stage:="准备"
 var facts: Array=[]
 var consent_fixture: Array=[]
+var trace_log: FileAccess
+var operation_serial:=0
 const Snapshot=preload("res://scripts/skills/verification_snapshot.gd")
 var api: Node
 class ObservedWorld extends "res://scripts/skills/luau_world_adapter.gd":
@@ -27,18 +29,29 @@ class ObservedWorld extends "res://scripts/skills/luau_world_adapter.gd":
 		await observer.capture("宿主结束清理：恢复完成")
 		return result
 	func request(operation: String, args: Dictionary) -> Dictionary:
-		await observer.capture(operation+" 开始")
+		observer.operation_serial+=1
+		var serial: int=observer.operation_serial
+		var started:=Time.get_ticks_msec()
+		observer.record_partial({"type":"operation_started","request_id":serial,"operation":operation,"arguments":args})
+		if observer.needs_action_frame(operation):await observer.capture(operation+" 开始")
 		var result: Dictionary=await super.request(operation,args)
-		await observer.capture(operation+" / "+str(result.get("code",result.get("ok"))))
+		observer.record_partial({"type":"operation_finished","request_id":serial,"step":{"operation":operation,"arguments":args,"result":result,"elapsed_ms":Time.get_ticks_msec()-started}})
+		if observer.needs_action_frame(operation):await observer.capture(operation+" / "+str(result.get("code",result.get("ok"))))
 		return result
+static func needs_action_frame(operation: String) -> bool:
+	# 查询的完整数值轨迹仍逐条保存；不为读取同一现场重复阻塞渲染两帧。
+	# 未知操作按会改变世界处理，不能因漏列新能力而丢掉动作证据。
+	return operation not in ["perceive","walk_options","recall_locations","observe","body_point","contact_point","inspect_contents","inspect_body","surface","check_placement","plan_grasp"]
+
+func record_partial(event: Dictionary) -> void:
+	# 超时/进程被终止前逐条落盘，不能只在整段技能返回后才保存失败证据。
+	if trace_log==null:return
+	event["time_ms"]=Time.get_ticks_msec()-start_ms
+	trace_log.store_line(JSON.stringify(event));trace_log.flush()
+
 func _initialize() -> void: run.call_deferred()
 func _process(_delta: float) -> bool:
-	if recording and is_instance_valid(api) and api.motor!=null:
-		samples.append({"time_ms":Time.get_ticks_msec()-start_ms,"stage":stage,"hand":api.BodyMotor.xyz(api.motor.point("Hand.R")),"mouth":api.BodyMotor.xyz(api.motor.mouth())})
-		var joints: Dictionary={}
-		for bone in ["Hips","Chest","Head","Hand.L","Hand.R","Shin.L","Shin.R","Foot.L","Foot.R"]:
-			joints[bone]=api.BodyMotor.xyz(api.motor.point(bone))
-		samples[-1]["joints"]=joints
+	if recording and is_instance_valid(api) and api.body_state!=null:
 		if not capturing and Time.get_ticks_msec()-last_frame>600: capture.call_deferred(stage)
 	return false
 static func retain_history(history: Array) -> Array:
@@ -86,6 +99,8 @@ func run() -> void:
 	if not job.is_valid_identifier() or not motion_dir.is_valid_identifier(): quit(2);return
 	folder="res://services/skill-runtime/runtime/jobs/"+job;motion=folder+"/"+motion_dir
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(motion))
+	trace_log=FileAccess.open(motion+"/partial_trace.jsonl",FileAccess.WRITE)
+	assert(trace_log!=null,"无法保存独立验证执行证据")
 	create_timer(155).timeout.connect(func():push_error("独立验证超过预算");quit(1))
 	var request: Dictionary=JSON.parse_string(FileAccess.get_file_as_string(folder+"/build_request.json"))
 	var person: String=request.verification_snapshot.person_id
@@ -101,14 +116,14 @@ func run() -> void:
 	while not sim.ready_for_actions: await physics_frame
 	var actor: Dictionary=sim.actors[person]
 	var objects: Node=sim.world_objects
-	var motor=load("res://scripts/skills/body_motor.gd").new();motor.initialize(actor,person)
 	if request.verification_snapshot.objects.has("wood_block") or request.verification_snapshot.objects.has("stone_tool"):
-		preload("res://scripts/skills/luau_playtest.gd").populate(sim,objects,motor,person)
+		preload("res://scripts/skills/luau_playtest.gd").populate(sim,objects,person)
 	Snapshot.restore(sim,request.verification_snapshot)
 	for frame in 5:await physics_frame
 	api=ObservedWorld.new();api.sim=sim;api.person_id=person;api.objects=objects;api.observer=self;scene.add_child(api)
 	sim.perception.observe(person)
-	sim.life_world.fact.connect(func(event: Dictionary):facts.append(event.duplicate(true)))
+	sim.life_world.fact.connect(func(event: Dictionary):
+		facts.append(event.duplicate(true));record_partial({"type":"world_fact","fact":event.duplicate(true)}))
 	sim.handover.offered.connect(func(event: Dictionary):
 		consent_fixture.append({"event_id":event.id,"recipient":event.listeners[0],"answer":"accept","source":"隔离接收测试替身，非真实模型决定"})
 		sim.handover.respond.call_deferred(event.id,event.listeners[0],true))
@@ -149,11 +164,15 @@ func run() -> void:
 	await capture("执行后")
 	recording=false
 	while capturing:await process_frame
+	# 保留实际执行结束现场，便于后续针对失败环节修订；不伪造成功或覆盖原输入快照。
+	var snapshot_file:=FileAccess.open(motion+"/final_snapshot.json",FileAccess.WRITE)
+	assert(snapshot_file!=null,"无法保存验证结束现场")
+	snapshot_file.store_string(JSON.stringify(Snapshot.capture(sim,person)));snapshot_file.close()
 	var returned: Dictionary=outcome.get("returned",{}) if outcome.get("returned") is Dictionary else {}
 	var failures: Array=[]
 	if outcome.status!="completed" or not returned.get("ok",false):failures.append("技能实际执行未完成")
 	if outcome.get("trace",[]).is_empty():failures.append("没有世界交互证据，不能只返回成功")
 	var file:=FileAccess.open(motion+"/motion.json",FileAccess.WRITE)
-	file.store_string(JSON.stringify({"passed":failures.is_empty(),"faults":[],"frames":frames,"all_frames":all_frames,"samples":samples,"result":{"before":before,"after":Snapshot.evidence(sim,person),"facts":facts,"consent_fixture":consent_fixture,"runtime":outcome,"arguments":arguments,"failures":failures},"note":"宿主隔离回放当前实体状态。passed仅表示代码完成，不代表满足玩家目标；必须由独立审查结合原话、前后事实与动作证据批准。隔离NPC接受递物使用明确的测试替身；不证明实际人物会同意。真实场景仍由接收者模型决定。"}));file.close()
+	file.store_string(JSON.stringify({"passed":failures.is_empty(),"faults":[],"frames":frames,"all_frames":all_frames,"samples":samples,"result":{"before":before,"after":Snapshot.evidence(sim,person),"facts":facts,"consent_fixture":consent_fixture,"runtime":outcome,"arguments":arguments,"failures":failures},"note":"宿主隔离回放当前实体状态。passed仅表示代码完成，不代表满足玩家目标；必须由独立审查结合原话、前后事实与操作证据批准。隔离NPC接受递物使用明确的测试替身；不证明实际人物会同意。真实场景仍由接收者模型决定。"}));file.close()
 	print("LUAU_CANDIDATE_RESULT failures=",failures," frames=",frames.size())
 	scene.queue_free();await create_timer(0.2).timeout;quit(0 if failures.is_empty() else 1)

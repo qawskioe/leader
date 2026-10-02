@@ -75,7 +75,8 @@ static func validate_decision(text: String, require_social_fields: bool = false,
 		if data.intent!="none": return {"ok":false,"error":"同轮不能同时调用技能与取消动作"}
 		for key in data.skill_call.arguments:
 			var value: Variant=data.skill_call.arguments[key]
-			if not key is String or not (preload("res://scripts/skills/spatial_target.gd").valid(value) or (value is String and value.length()<=400) or value is bool or ((value is int or value is float) and is_finite(value) and absf(value)<=10000)):
+			# 此层只检查引用形状；距离权限由实际世界操作决定，远处参照物也可用于转头观察。
+			if not key is String or not (preload("res://scripts/skills/spatial_target.gd").valid(value,INF) or (value is String and value.length()<=400) or value is bool or ((value is int or value is float) and is_finite(value) and absf(value)<=10000)):
 				return {"ok":false,"error":"技能参数必须为声明的数据类型，不能传递代码、函数或任意嵌套对象"}
 	if not data.has("learning_request"): data.learning_request=null
 	if data.learning_request!=null:
@@ -110,6 +111,7 @@ static func validate_decision(text: String, require_social_fields: bool = false,
 		return {"ok":false,"error":"递物决定必须为 accept 或 decline"}
 	if data.has("offer_response") and (data.intent!="none" or data.skill_call!=null or data.learning_request!=null):
 		return {"ok":false,"error":"递物决定先等待实际交付，不能同时执行其他动作"}
+	if not require_conversation and data.get("conversation")==null:data.erase("conversation")
 	if require_conversation and not data.has("conversation"):
 		return {"ok":false,"error":"缺少交谈位置判断 conversation"}
 	if data.has("conversation"):

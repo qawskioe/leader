@@ -18,6 +18,20 @@ class DraftTests(unittest.TestCase):
             self.assertEqual(packet['source'],'own')
             self.assertIn('尚未掌握',packet['meaning'])
             self.assertFalse((current/'package.json').exists())
+    def test_revision_draft_requires_same_accepted_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);current=root/'job_current';current.mkdir()
+            request={'goal_id':'g','verification_snapshot':{'person_id':'a'},'revision':{'ref':'g@v1'}}
+            old=root/'job_old';old.mkdir()
+            (old/'status.json').write_text(json.dumps({'state':'failed'}))
+            (old/'build_request.json').write_text(json.dumps(request))
+            (old/'candidate_definition.json').write_text(json.dumps({'program_json':json.dumps({'source':'failed revision'}),'parameters':{}}))
+            self.assertEqual(failed_draft(current,request)['source'],'failed revision')
+            request['revision']['ref']='g@v2'
+            self.assertEqual(failed_draft(current,request),{})
+            request.pop('revision')
+            self.assertEqual(failed_draft(current,request),{})
+
     def test_missing_or_damaged_draft_does_not_become_a_skill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);current=root/'job_current';current.mkdir()

@@ -68,6 +68,7 @@ var mic: Node
 var menu: CanvasLayer
 var busy := false
 var cancel_recording_on_focus_loss := true
+var session_manager: Node
 var _positions: Dictionary = {}
 var _source := Vector3.ZERO
 var _job_config: Dictionary = {}
@@ -138,6 +139,7 @@ func _ready() -> void:
 	add_child(mic)
 	mic.captured.connect(_on_captured)
 	_prepare_desktop_microphone.call_deferred()
+	session_manager=preload("res://scripts/survival/session_controller.gd").new();session_manager.host=self;add_child(session_manager)
 	menu = Menu.new()
 	menu.controller = self
 	add_child(menu)
@@ -159,10 +161,11 @@ func _ready() -> void:
 	log_event({"type":"session","message":"按住 V 说话；T 输入文字；E 展开人物信息。采集：F 拿篮子／摘果／逐份卸货，右键装篮，G 放下篮子。F1 查看说明与记录。","log_path":ProjectSettings.globalize_path(_log_path)})
 	var text_input=preload("res://scripts/voice/player_text_input.gd").new();text_input.voice=self;add_child(text_input)
 	if OS.get_cmdline_user_args().has("--player-control"): add_child(preload("res://scripts/player_control.gd").new())
-	if DisplayServer.get_name()!="headless": _record_scene_restart.call_deferred()
-	if OS.get_cmdline_user_args().has("--luau-playtest"): _prepare_luau_playtest.call_deferred()
-	elif OS.get_cmdline_user_args().has("--gather-scenario"): reset_gather_scenario.call_deferred()
-	elif OS.get_cmdline_user_args().has("--help-scenario"): reset_help_scenario.call_deferred()
+	var startup_scenario:=""
+	for option in ["luau-playtest","gather-scenario","help-scenario"]:
+		if OS.get_cmdline_user_args().has("--"+option):startup_scenario=option;break
+	if DisplayServer.get_name()!="headless" or not startup_scenario.is_empty():
+		get_tree().auto_accept_quit=false;session_manager.booting=true;session_manager.startup.call_deferred(startup_scenario)
 	if not config_error(true).is_empty():
 		menu.open()
 func config_error(require_asr: bool) -> String:
@@ -261,11 +264,14 @@ func cancel_interaction() -> void:
 	log_event({"type":"cancelled","message":"已取消当前交互，迟到的识别与模型结果不会执行；已发生的世界变化保留。"})
 
 func _notification(what: int) -> void:
+	if what==NOTIFICATION_WM_CLOSE_REQUEST and is_instance_valid(session_manager):
+		session_manager.quit_game.call_deferred();return
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and cancel_recording_on_focus_loss and is_instance_valid(mic) and mic.recording:
 		mic.cancel()
 		log_event({"type":"cancelled","message":"窗口失去焦点，已取消录音"})
 
 func _begin_recording() -> void:
+	if is_instance_valid(session_manager) and session_manager.is_locked():return
 	var input_started := Time.get_ticks_usec()
 	if mic.recording: return
 	if _pending_captures.size()>=3:
@@ -435,6 +441,7 @@ func _record_scene_restart() -> void:
 	store.memory.dirty=true
 
 func say_text(value: String) -> String:
+	if is_instance_valid(session_manager) and session_manager.is_locked():return "正在存取或等待恢复存档"
 	var text:=value.strip_edges()
 	if text.is_empty() or text.length()>500:return "请输入1至500字"
 	if mic.recording:return "正在录音，请先结束本句录音"
@@ -484,6 +491,10 @@ func gift_test(recipient_id: String) -> void:
 	log_event({"type":"fixture","event":event})
 	_start_pipeline(event, _job_config)
 
+func _execution_allowed() -> bool:
+	# 同时保留请求发起时权限和当前开关；关闭后到达的模型/语音回调不能启动操作。
+	return _allow_execution and _job_config.get("actions_enabled",true) and config.get("actions_enabled",true) and (not is_instance_valid(session_manager) or not session_manager.is_locked())
+
 func _on_report(report: Dictionary) -> void:
 	if _round_events.get(report.event_id,{}).get("speaker")=="player":
 		captions[report.person_id].show_hearing("已听见 · 决策处理失败" if report.has("error") else ("已听见 · 旁听" if report.decision.get("conversation",{}).get("participation")=="listen" else "已听见 · 已作出回应"),5.0)
@@ -499,10 +510,10 @@ func _on_report(report: Dictionary) -> void:
 				var pending: Dictionary=autonomy.requests[index]
 				if pending.get("kind")=="skill_progress" and report.person_id in pending.get("listeners",[]) and _task_was_cancelled(report.person_id,pending):
 					autonomy.requests.remove_at(index)
-	if report.has("decision") and report.decision.has("offer_response") and _allow_execution and _job_config.get("actions_enabled",true):
+	if report.has("decision") and report.decision.has("offer_response") and _execution_allowed():
 		_resolve_player_offer(report)
 	if report.has("decision") and report.decision.get("capability_gap")!=null: _record_capability_gap(report)
-	if _allow_execution and _job_config.get("actions_enabled",true) and report.has("decision") and report.decision.intent=="rest":
+	if _execution_allowed() and report.has("decision") and report.decision.intent=="rest":
 		var lessons: Array=social_learning.cancel(report.person_id)
 		skills.cancel(report.person_id)
 		survival.stop(report.person_id)
@@ -511,19 +522,17 @@ func _on_report(report: Dictionary) -> void:
 			if (autonomy.requests[index].get("kind")=="skill_ready" and report.person_id in autonomy.requests[index].listeners) or autonomy.requests[index].get("lesson_request_id","") in lessons: autonomy.requests.remove_at(index)
 		_on_action_result({"person_id":report.person_id,"source_event_id":report.event_id,"intent":"rest","success":true,"message":"已停止当前行动"})
 	if report.has("decision") and report.decision.get("revision_request")!=null:
-		if _allow_execution:
-			var original: Dictionary=store.event_for(report.person_id,report.event_id)
-			var submitted: Dictionary=skills.request_revision(report.person_id,original,report.decision.revision_request)
-			log_event({"type":"learning_requested","event_id":report.event_id,"person_id":report.person_id,"message":"正在学习：根据教导修订原技能；旧版本保留" if submitted.ok else submitted.error,"request":submitted})
+		if _execution_allowed():
+			_begin_revision(report.person_id,report.event_id,report.decision.revision_request)
 		else: log_event({"type":"learning_not_started","event_id":report.event_id,"person_id":report.person_id,"message":"本轮没有修订权限"})
 	if report.has("decision") and report.decision.get("learning_request")!=null:
-		if _allow_execution:
+		if _execution_allowed():
 			if not _job_config.get("tts_enabled",true):
 				captions[report.person_id].begin_public(report.decision.public_reply)
 				_begin_self_learning(report.person_id,report.event_id,report.decision)
 		else: log_event({"type":"learning_not_started","event_id":report.event_id,"person_id":report.person_id,"message":"本轮没有行动权限，未启动编写"})
 	if report.has("decision") and report.decision.get("skill_call")!=null:
-		if _allow_execution:
+		if _execution_allowed():
 			var submitted: Dictionary=skills.invoke(report.person_id,report.event_id,report.decision.skill_call)
 			if submitted.ok:
 				var source: Dictionary=store.event_for(report.person_id,report.event_id)
@@ -601,10 +610,10 @@ func _pump_speech() -> void:
 	output.playback_started.connect(func():
 		captions[report.person_id].begin_public(report.decision.public_reply)
 		store.mark_reply(report.person_id,report.event_id,"正在向玩家播放，尚未完整说完")
-		log_event({"type":"speaking_started","person_id":report.person_id,"before_speech_done":not output.ended,"while_recording":mic.recording,"elapsed_ms":Time.get_ticks_msec()-_event_started,"message":person.name+"开始说话（Cloud TTS / Kore）"}))
-	log_event({"type":"tts_request","person_id":report.person_id,"style":report.decision.speech_style,"provider":"Google Cloud TTS / Gemini 3.1 Flash","voice":"Kore","message":"正在合成公开台词："+person.name})
+		log_event({"type":"speaking_started","person_id":report.person_id,"before_speech_done":not output.ended,"while_recording":mic.recording,"elapsed_ms":Time.get_ticks_msec()-_event_started,"message":person.name+"开始说话（Gemini API 3.8 / "+person.voice+"）"}))
+	log_event({"type":"tts_request","person_id":report.person_id,"style":report.decision.speech_style,"provider":"Google Gemini API / Gemini 3.8 Flash TTS","voice":person.voice,"message":"正在合成公开台词："+person.name})
 	# 不把 report、人物上下文或私下理解传给语音服务。
-	var result: Dictionary = await tts.speak(report.decision.public_reply,report.decision.speech_style,"Kore")
+	var result: Dictionary = await tts.speak(report.decision.public_reply,report.decision.speech_style,person.voice)
 	tts.audio_chunk.disconnect(chunk_callback)
 	if generation!=_input_generation:
 		output.queue_free();_speech_busy=false;_pump_speech.call_deferred();return
@@ -674,17 +683,15 @@ func _on_learning_finished(result: Dictionary) -> void:
 	log_event({"type":"skill_learning","person_id":result.person_id,"message":result.message,"learning":result})
 	if original.is_empty(): return
 	if not result.ok:
-		var failed:={"id":result.job+"_failed","kind":"skill_progress","speaker":"world","listeners":[result.person_id],"source_event_id":original.id,"original_event":original.duplicate(true),"learning_failed":true,"goal_id":result.get("goal_id",""),"learning_goal":result.get("goal",""),"text":"本次学习经过有限修订仍未通过验证，未加载候选。原因："+result.message+"。依据当前已会能力及原请求决定如何处理，可以说明障碍；这不是新教导，不自动再次申请同一学习。"}
+		var failed:={"id":result.job+"_failed","kind":"skill_progress","speaker":"world","listeners":[result.person_id],"source_event_id":original.id,"original_event":original.duplicate(true),"learning_failed":true,"goal_id":result.get("goal_id",""),"learning_goal":result.get("goal",""),"text":"本次方法未学成。原因："+result.message}
 		# 学习结果发生时本人已经知道；排队只延迟下一次判断，不延迟记忆。
 		# 否则玩家先追加教导时，模型看不到原目标编号，会另建目标丢失草稿。
-		store.hear(result.person_id,failed)
-		store.memory.save()
-		autonomy.offer_request(failed,_autonomy_clock)
+		_record_learning_failure(result.person_id,failed)
 		return
-	var event:={"id":result.job+"_ready","kind":"skill_ready","speaker":"world","listeners":[result.person_id],"source_event_id":original.id,"original_event":original.duplicate(true),"skill_ref":result.ref,"text":"你已掌握新技能。原请求是："+original.text+"。请结合当前情况继续处理，学会不等于已经完成原请求。"}
+	var event:={"id":result.job+"_ready","kind":"skill_ready","speaker":"world","listeners":[result.person_id],"source_event_id":original.id,"original_event":original.duplicate(true),"skill_ref":result.ref,"text":"已学会新方法，可用于现场行动。"}
 	if result.get("revision_of","")!="":
 		event.kind="skill_revised"
-		event.text="此前教导已经处理完成，新版本已通过验证并替换旧版本。不是新的玩家教导，不再重复申请修订，也不复述确认台词。原话："+original.text+"。仅当原话明确要求展示或再试一次时才试用新版本，否则结束本次学习。"
+		event.text="方法已修订，可使用新版本。"
 	store.hear(result.person_id,event)
 	store.memory.save()
 	autonomy.offer_request(event,_autonomy_clock)
@@ -737,7 +744,7 @@ func _queue_task_result(result: Dictionary) -> void:
 	if not source.is_empty() and not cancelled and step<=16:
 		# 使用当时提交此动作时绑定的任务现场，不能用后来另一任务覆盖迟到结果。
 		var original: Dictionary=root_event
-		var event:={"id":str(result.source_event_id)+"_skill_result","kind":"skill_progress","speaker":"world","listeners":[result.person_id],"source_event_id":result.source_event_id,"original_event":original.duplicate(true),"skill_followup_step":step,"result":result.duplicate(true),"text":"上一步实际结果："+str(result.message)+"。原请求："+str(original.get("text",""))+"。根据实际结果判断是否已完成；已完成则停止，不重复执行或播报。未完成才决定下一步。"}
+		var event:={"id":str(result.source_event_id)+"_skill_result","kind":"skill_progress","speaker":"world","listeners":[result.person_id],"source_event_id":result.source_event_id,"original_event":original.duplicate(true),"skill_followup_step":step,"result":result.duplicate(true),"text":"上一步实际结果："+str(result.message)}
 		if waited: event.id+="_for_"+str(original.id)
 		autonomy.offer_request(event,_autonomy_clock)
 	elif not source.is_empty() and not cancelled and step>16:
@@ -767,6 +774,7 @@ func _on_world_fact(fact: Dictionary) -> void:
 	store.save_snapshot(_snapshot_path)
 
 func _process(_delta: float) -> void:
+	if is_instance_valid(session_manager) and session_manager.is_locked():return
 	_autonomy_clock+=_delta
 	if is_instance_valid(menu):
 		var eye: Vector3=get_parent().get_node("Player/Eyes").global_position
@@ -797,7 +805,7 @@ func _process(_delta: float) -> void:
 	_allow_execution=true
 	_event_started=Time.get_ticks_msec()
 	_job_config=config.duplicate(true)
-	var event:={"id":_new_id(),"kind":"assistance_completed","speaker":"world","text":"你刚实际消耗的食物或水由对方实际交付给你。结合身体状态、关系及经过，自行决定是否向帮助者回应，也可以保持沉默。","result":result,"assistance":result.food_origin,"listeners":[result.person_id]}
+	var event:={"id":_new_id(),"kind":"assistance_completed","speaker":"world","text":"你刚消耗的食物或水来自这次他人的交付，来源与交付经过见assistance。","result":result,"assistance":result.food_origin,"listeners":[result.person_id]}
 	_display_event_id=event.id
 	log_event({"type":"execution_feedback","message":"让"+store.people[result.person_id].name+"判断是否回应帮助者"})
 	_start_pipeline(event,_job_config)
@@ -892,10 +900,10 @@ func _deliver_public(speaker_id: String, event_id: String, text: String, radius:
 			if location_reply: voice_locations[id]=["person/"+speaker_id]
 		audience.append(id)
 	if decision.get("skill_dialogue")!=null:
-		if _allow_execution and config.get("actions_enabled",true): social_learning.public_decision(speaker_id,store.event_for(speaker_id,event_id),decision,audience)
+		if _execution_allowed(): social_learning.public_decision(speaker_id,store.event_for(speaker_id,event_id),decision,audience)
 		log_event({"type":"public_heard","speaker":speaker_id,"listeners":audience,"source_event_id":event_id})
 		return
-	if decision.get("learning_request")!=null and _allow_execution:
+	if decision.get("learning_request")!=null and _execution_allowed():
 		_begin_self_learning(speaker_id,event_id,decision)
 	for record in store.people[speaker_id].skill_knowledge:
 		if record.event_id in decision.get("shared_skill_knowledge",[]):
@@ -934,7 +942,7 @@ func _deliver_public(speaker_id: String, event_id: String, text: String, radius:
 			var task: Dictionary=store.working_tasks.get(target,{})
 			var closed: bool=task.get("request",{}).get("id")==waiting.original_event.id and task.get("state") in ["completed","cancelled","refused","paused_budget"]
 			if not closed and not _task_was_cancelled(target,{"original_event":waiting.original_event}):
-				autonomy.offer_request({"id":event_id+"_reply_heard","kind":"social_reply","speaker":speaker_id,"speaker_name":store.people[speaker_id].name,"listeners":[target],"source_event_id":event_id,"original_event":waiting.original_event.duplicate(true),"text":store.people[speaker_id].name+"回答了你先前的请求：“"+text+"”。这只证明你听到了答复，不证明动作或交付已完成；结合当前观察与原请求决定下一步，不必回复客套话。"},_autonomy_clock)
+				autonomy.offer_request({"id":event_id+"_reply_heard","kind":"social_reply","speaker":speaker_id,"speaker_name":store.people[speaker_id].name,"listeners":[target],"source_event_id":event_id,"original_event":waiting.original_event.duplicate(true),"text":store.people[speaker_id].name+"回答了你先前的请求：“"+text+"”。"},_autonomy_clock)
 	if config.get("autonomy_enabled",false) and decision.get("speech_act","")=="request" and decision.get("request_kind")=="information" and store.people.has(target):
 		var question_source: Dictionary=store.event_for(speaker_id,event_id)
 		var task: Dictionary=store.working_tasks.get(speaker_id,{})
@@ -958,14 +966,39 @@ func _deliver_public(speaker_id: String, event_id: String, text: String, radius:
 				if _social_requests.size()>256:_social_requests.erase(_social_requests.keys()[0])
 			log_event({"type":"request_queued","person_id":target,"source_event_id":event_id,"message":store.people[target].name+"听到了求助，等待自主判断"})
 	if config.get("autonomy_enabled",false) and decision.get("speech_act","")!="request" and learned_by.has(target):
-		autonomy.offer_request({"id":event_id+"_information_"+target,"kind":"information_received","speaker":speaker_id,"speaker_name":store.people[speaker_id].name,"listeners":[target],"source_event_id":event_id,"text":store.people[speaker_id].name+"告诉你："+text+"。这属于听闻线索，不是你已亲眼确认；结合需求决定是否去核实或行动，不要求回复。","knowledge_ids":learned_by[target]},_autonomy_clock)
+		autonomy.offer_request({"id":event_id+"_information_"+target,"kind":"information_received","speaker":speaker_id,"speaker_name":store.people[speaker_id].name,"listeners":[target],"source_event_id":event_id,"text":store.people[speaker_id].name+"告诉你："+text+"。","knowledge_ids":learned_by[target]},_autonomy_clock)
 	log_event({"type":"public_heard","speaker":speaker_id,"listeners":audience,"source_event_id":event_id})
 
+func _record_learning_failure(id: String, event: Dictionary) -> void:
+	store.hear(id,event)
+	var error: String=store.memory.save()
+	assert(error.is_empty(),error)
+	autonomy.offer_request(event,_autonomy_clock)
+
+func _learning_submission_failed(id: String, event_id: String, original: Dictionary, submitted: Dictionary, request: Dictionary) -> void:
+	assert(not submitted.ok)
+	# 拒绝发生在创建任务之前；记录本人收到的提交结果，不虚构编写job或执行成果。
+	var event:={"id":event_id+"_learning_rejected_"+id,"kind":"skill_progress","speaker":"world","listeners":[id],"source_event_id":original.id,"original_event":original.duplicate(true),"learning_failed":true,"learning_started":false,"goal_id":request.get("goal_id",""),"learning_goal":request.get("goal",request.get("feedback","")),"revision_of":request.get("ref",""),"text":"学习未启动："+str(submitted.error)}
+	var task: Dictionary=store.working_tasks.get(id,{})
+	if task.get("action_event_id","")==event_id:
+		task.state="submission_failed"
+		task["submission_error"]=str(submitted.error)
+	_record_learning_failure(id,event)
+
+func _begin_revision(id: String, event_id: String, request: Dictionary) -> void:
+	if not _execution_allowed():return
+	var original: Dictionary=store.event_for(id,event_id)
+	var submitted: Dictionary=skills.request_revision(id,original,request)
+	log_event({"type":"learning_requested","event_id":event_id,"person_id":id,"message":"正在学习：根据教导修订原技能；旧版本保留" if submitted.ok else submitted.error,"request":submitted})
+	if not submitted.ok:_learning_submission_failed(id,event_id,original,submitted,request)
+
 func _begin_self_learning(id: String, event_id: String, decision: Dictionary) -> void:
+	if not _execution_allowed():return
 	var event: Dictionary=store.event_for(id,event_id)
 	var original: Dictionary=event.get("original_event",event)
 	var submitted: Dictionary=skills.request_learning(id,original,decision.learning_request)
 	log_event({"type":"learning_requested","event_id":event_id,"person_id":id,"message":"已说明打算，开始自行学习" if submitted.ok else submitted.error,"request":submitted})
+	if not submitted.ok:_learning_submission_failed(id,event_id,original,submitted,decision.learning_request)
 
 func _record_world_witnesses(fact: Dictionary) -> void:
 	var actor: Node3D=get_parent().get_node("Player") if fact.person_id=="player" else survival.actors[fact.person_id].body

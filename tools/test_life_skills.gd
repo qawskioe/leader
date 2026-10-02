@@ -8,11 +8,13 @@ func invoke(id: String, args: Dictionary={}) -> Dictionary:
 	assert(submitted.ok,JSON.stringify(submitted))
 	var outcome: Dictionary=await controller.finished
 	print("LIFE_RESULT ",id," ",JSON.stringify(outcome.runtime.get("returned",{"code":outcome.runtime.get("code"),"success":outcome.success})))
+	for step in outcome.runtime.get("trace",[]):
+		assert(step.operation not in ["reach_point","body_point","pose","pose_bones","relax","reach_with_body"],"普通吃喝不能依赖骨骼操作")
 	return outcome
 func run() -> void:
 	create_timer(170).timeout.connect(func():push_error("life skills timeout");quit(1))
 	var scene=load("res://scenes/initial_base.tscn").instantiate();root.add_child(scene)
-	var store=load("res://scripts/voice/people_store.gd").new();assert(store.initialize().is_empty())
+	var store=load("res://scripts/voice/people_store.gd").new();assert(store.initialize("res://data/people.json","user://life_test_%d.json"%Time.get_ticks_usec(),true).is_empty())
 	sim=load("res://scripts/survival/simulation.gd").new();sim.scene=scene;sim.store=store;sim.hunger_rate=0;sim.move_speed=4;scene.add_child(sim)
 	while not sim.ready_for_actions:await physics_frame
 	controller=load("res://scripts/skills/controller.gd").new();controller.sim=sim;controller.store=store;scene.add_child(controller)
@@ -26,10 +28,10 @@ func run() -> void:
 	for frame in 10:await physics_frame
 	store.people.person_003.needs.hunger=80
 	var before: int=sim.storage_food
-	var eaten: Dictionary=await invoke("eat")
+	var eaten: Dictionary=await invoke("eat",{"source":"storage"})
 	if not eaten.success:push_error("eat failed");quit(1);return
 	assert(sim.storage_food==before-1 and sim.eaten==1 and store.people.person_003.needs.hunger==35 and sim.gathering.hands.get("person_003",{}).is_empty())
-	var fetched: Dictionary=await invoke("fetch_food")
+	var fetched: Dictionary=await invoke("fetch_food",{"source":"storage"})
 	assert(fetched.success and sim.storage_food==before-2)
 	var stored: Dictionary=await invoke("store_held_food")
 	if not stored.success:print("STORE_FAILURE ",JSON.stringify(stored.runtime));quit(1);return
@@ -40,5 +42,5 @@ func run() -> void:
 	var drunk: Dictionary=await invoke("drink")
 	if not drunk.success:push_error("drink failed");quit(1);return
 	assert(sim.water.consumed==1 and store.people.person_003.needs.thirst<40)
-	print("LIFE_SKILLS_PASSED real_luau_take_contact_consume_food_water")
+	print("LIFE_SKILLS_PASSED real_luau_access_consume_food_water_without_bones")
 	scene.queue_free();await create_timer(0.2).timeout;quit()

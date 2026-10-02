@@ -34,7 +34,7 @@ print(json.dumps({'kind':'verify','sequence':1}),flush=True)
 r=json.loads(sys.stdin.readline())
 assert r['sequence']==1 and r['value']['passed']
 print(json.dumps({'kind':'result','value':{'ok':True}}),flush=True)
-''')
+''',encoding='utf-8')
             real=subprocess.Popen
             def launch(command,**kwargs):
                 self.assertEqual(command[1:3],['-X','utf8'])
@@ -45,7 +45,7 @@ print(json.dumps({'kind':'result','value':{'ok':True}}),flush=True)
             progress=[]
             with patch('development_backend.subprocess.Popen',side_effect=launch):
                 result=run(workspace,{'model':'fixture'},time.monotonic()+10,verify,progress.append,lambda:False,folder,{'backend':'codex','runtime':'local'})
-            self.assertTrue(result['ok']);self.assertEqual(result['commit'],'host-verified')
+            self.assertTrue(result['ok'],result);self.assertEqual(result['commit'],'host-verified')
             self.assertEqual(progress,[{'message':'正在验证中文进度'}])
 
     def test_backend_claim_without_host_approval_is_rejected(self):

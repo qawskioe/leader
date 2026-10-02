@@ -32,6 +32,7 @@ func _ready() -> void:
 		sim.world_objects.register_object("water_bag/"+key,root,Vector3(0,0.18,0))
 		# 同一字典就是世界物体记录，水系统不维护第二份持有关系。
 		bags[key]=sim.world_objects.objects["water_bag/"+key]
+		bags[key]["xr_kind"]="water"
 		bags[key].merge({"root":root,"label":label,"spawn":at,"contents":preload("res://scripts/survival/container_contents.gd").new("water",CAPACITY),"kind":"water_bag","extra":water_properties.bind(key)},true)
 		sim.content_interaction.register_container("water_bag/"+key,bags[key],Vector3(0,0.28,0))
 
@@ -44,11 +45,8 @@ func _extract_water(_person: String) -> Dictionary:
 
 func hold_pose(id: String) -> Transform3D:
 	var body:=owner(id)
-	var pose:=body.global_transform*Transform3D(Basis.IDENTITY,Vector3(0.45,0.85,0.35))
-	if id=="player":
-		pose=body.get_node("Eyes").global_transform*Transform3D(Basis.IDENTITY,Vector3(0.48,-0.3,-1.15))
-		if body.is_vr_active():pose=body.vr.hands.transform_for("water",pose,body.vr)
-	return pose
+	if id=="player":return sim.world_objects.player_hold_transform("water_bag/"+held(id),body)
+	return body.global_transform*Transform3D(Basis.IDENTITY,Vector3(0.45,0.85,0.35))
 
 func owner(id: String) -> Node3D:
 	return sim.scene.get_node("Player") if id=="player" else sim.actors[id].body
@@ -59,7 +57,7 @@ func held(id: String) -> String:
 	return ""
 
 func free_hand(id: String, hand: String="Hand.R") -> bool:
-	return not sim.world_objects.held.has(id+"/"+hand) and (hand!="Hand.R" or not sim.gathering.hands.has(id))
+	return not sim.world_objects.held.has(id+"/"+hand) and (not sim.gathering.hands.has(id) or sim.gathering.hands[id].get("hand","Hand.R")!=hand)
 
 func reach(id: String, at: Vector3) -> bool:
 	return sim.gathering._reachable(id,at+Vector3(0,0.3,0),2.6)
@@ -114,9 +112,16 @@ func give(id: String, recipient: String) -> Dictionary:
 	# 先验证接触范围；不能通过远程尝试交付窥知接收者持物状态。
 	if not reach(id,owner(recipient).global_position):
 		return {"success":false,"category":"out_of_reach","message":"尚未到接收者可交接的距离，水袋仍在自己手中"}
-	if not free_hand(recipient):
-		return {"success":false,"category":"recipient_occupied","message":"接收者双手被物品占用，无法接下水袋；水袋仍在自己手中，需对方腾出手后才能交付"}
-	var transferred: Dictionary=sim.world_objects.transfer_attachment("water_bag/"+key,id,recipient,"Hand.R",hold_pose.bind(recipient))
+	var hand:=""
+	for candidate in (["Hand.R"] if recipient=="player" else ["Hand.R","Hand.L"]):
+		if free_hand(recipient,candidate):hand=candidate;break
+	if hand.is_empty():return {"success":false,"category":"recipient_occupied","message":"接收者没有空手，水袋仍在自己手中"}
+	var attachment: Callable=hold_pose.bind(recipient)
+	if recipient!="player":
+		var actor: Node3D=owner(recipient)
+		var offset: Transform3D=actor.global_transform.affine_inverse()*sim.world_objects.carry_transform("water_bag/"+key,actor,hand)
+		attachment=func():return actor.global_transform*offset
+	var transferred: Dictionary=sim.world_objects.transfer_attachment("water_bag/"+key,id,recipient,hand,attachment)
 	assert(transferred.ok,"接触与空手检查后同步转移不应失败")
 	return {"success":true,"category":"","message":"把水袋实际交给对方"}
 
@@ -124,10 +129,12 @@ func player_hint() -> String:
 	var camera: Camera3D=sim.scene.get_node("Player/Eyes")
 	if aimed(camera,SOURCE): return "F · 装满水袋" if held("player")!="" else "F · 在水源喝水"
 	for bag in bags.values():
-		if bag.holder=="" and aimed(camera,bag.root.global_position): return "F · 拿起水袋（%d 份水）"%bag.contents.count
+		if free_hand("player") and bag.holder=="" and aimed(camera,bag.root.global_position): return "F · 拿起水袋（%d 份水）"%bag.contents.count
 	if held("player")!="":
 		for id in sim.actors:
-			if aimed(camera,owner(id).global_position+Vector3(0,1,0)): return "F · 递水袋给"+sim.store.people[id].name+"（等待对方决定）"
+			if aimed(camera,owner(id).global_position+Vector3(0,1,0)):
+				var check: Dictionary=sim.gathering.offer_availability(id,"water")
+				return "F · 递水袋给"+sim.store.people[id].name+"（等待对方决定）" if check.ok else check.message
 	return ""
 
 func _physics_process(delta: float) -> void:
@@ -145,11 +152,14 @@ func player_interact() -> bool:
 		var ok:=fill("player") if held("player")!="" else drink("player")
 		sim.gathering.interaction_result.emit({"action":"取水／饮水","ok":ok}); return true
 	for key in bags:
-		if bags[key].holder=="" and aimed(camera,bags[key].root.global_position):
+		if free_hand("player") and bags[key].holder=="" and aimed(camera,bags[key].root.global_position):
 			sim.gathering.interaction_result.emit({"action":"拿水袋","ok":pickup("player",key)}); return true
 	if held("player")!="":
 		for id in sim.actors:
 			if aimed(camera,owner(id).global_position+Vector3(0,1,0)):
+				var check: Dictionary=sim.gathering.offer_availability(id,"water")
+				if not check.ok:
+					sim.gathering.interaction_result.emit({"action":"递出水袋","ok":false,"message":check.message});return true
 				var offered: String=sim.gathering.offer_item(id,"water")
 				sim.gathering.interaction_result.emit({"action":"递出水袋","ok":offered!="","pending":offered!=""})
 				return true

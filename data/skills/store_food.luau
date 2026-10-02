@@ -30,8 +30,6 @@ return function(args,context)
         if not placed.ok then return placed end
         stored+=1
     end
-    local released=world.request("release",{object=args.container})
-    if not released.ok then return released end
-    world.request("relax",{seconds=0.4})
+    -- 存储只负责物资入库。容器仍在手中；放下是独立行为，不能否定已完成的存储。
     return {ok=true,code="stored",quantity=stored,target=found.object}
 end

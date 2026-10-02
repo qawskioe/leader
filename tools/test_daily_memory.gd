@@ -1,5 +1,6 @@
 extends SceneTree
 func _initialize() -> void:
+	create_timer(15).timeout.connect(func():push_error("daily memory timeout");quit(1))
 	var path:="res://services/luau-runtime/runtime/daily_memory_%d.json"%Time.get_ticks_usec()
 	var store=preload("res://scripts/voice/people_store.gd").new()
 	assert(store.initialize("res://data/people.json",path,true).is_empty())
@@ -7,7 +8,7 @@ func _initialize() -> void:
 	for n in 40: store.hear(id,{"id":"today_"+str(n),"speaker":"player","text":"今天的事情"+str(n)})
 	store.memory.note_observation(id,{"id":"wood_block","position":[2,0,3],"kind":"interactable","source":"亲眼看见","visible_now":true,"observed_at_seconds":store.memory.clock,"extra":{"name":"木块"}})
 	store.hear(id,{"id":"task","speaker":"player","text":"把面前的两件物品搬出去"})
-	store.remember(id,"task",{"private_interpretation":"石块和木块都要搬，木块未完成","public_reply":"","skill_call":{"ref":"take","arguments":{"object":"stone_tool"}}})
+	store.remember(id,"task",{"private_interpretation":"石块和木块都要搬，木块未完成","public_reply":"","task_status":"active","task_handling":{"state":"execute","scope":"current_request","reason":"执行玩家任务"},"skill_call":{"ref":"take","arguments":{"object":"stone_tool"}}})
 	store.memory.advance(600)
 	assert(store.context_for(id).working_context.recent_turns.size()==41,"短期不按条数或几分钟删除")
 	assert(store.context_for("person_002").working_context.recent_turns.is_empty())
@@ -24,7 +25,7 @@ func _initialize() -> void:
 	assert(restored.memory.last_consolidation.carried_tasks==1)
 	assert(not restored.memory.recall(id,{"kind":"heard","keywords":["今天"],"limit":1}).records.is_empty())
 	restored.hear(id,{"id":"done","speaker":"world","text":"两件均已放稳"})
-	restored.remember(id,"done",{"private_interpretation":"任务全部完成","public_reply":"","task_status":"completed"})
+	restored.remember(id,"done",{"private_interpretation":"任务全部完成","public_reply":"","task_status":"completed","task_handling":{"state":"completed","scope":"existing_request","reason":"已有证据确认全部完成"}})
 	restored.memory.consolidate("rest")
 	assert(not restored.working_tasks.has(id) and restored.memory.observations[id].is_empty())
 	assert(restored.memory.save().is_empty())

@@ -29,7 +29,7 @@ func ensure_luau_world() -> void:
 
 	sim.perception.world_objects=world_objects
 
-func initialize_current(target: String="user://skills/egocentric/library.json") -> String:
+func initialize_current(target: String="user://skills/simplified/library.json") -> String:
 	var error:=initialize(target)
 	if error!="": return error
 	error=library.install_builtins()
@@ -47,7 +47,7 @@ func initialize(path: String) -> String:
 func sync_person(id: String) -> void:
 	store.people[id]["skill_refs"]=library.owners.get(id,[]).duplicate(true)
 	store.people[id]["available_skills"]=library.describe(id).filter(func(skill):return not skill.get("internal",false))
-	store.people[id]["skill_authoring"]={"available":true,"language":"Luau","rule":"利用已开放世界操作或已掌握技能编写新方法；隔离执行及独立审查后才加载"}
+	store.people[id]["skill_authoring"]=preload("res://scripts/skills/luau_contract.gd").authoring_context()
 	var owned_ids: Array=[]
 	for entry in library.owners.get(id,[]): owned_ids.append(library.definitions[entry.ref].id)
 	store.people[id]["learning_drafts"]=learning_drafts.get(id,[]).filter(func(draft):return draft.goal_id not in owned_ids)
@@ -66,7 +66,7 @@ func invoke(id: String, event_id: String, call: Dictionary) -> Dictionary:
 		if kind!="reference":continue
 		# 参数边界按数据种类校验，不按技能名称特判；具体操作再检查接触与用途。
 		if value is Dictionary:
-			var resolved: Dictionary=sim.space.resolve(id,value)
+			var resolved: Dictionary=sim.space.resolve(id,value,INF)
 			if not resolved.ok: return {"ok":false,"error":resolved.code}
 		elif sim.perception.known(id,value).is_empty() and sim.perception.known(id,"person/"+value).is_empty():
 			return {"ok":false,"error":"参数必须指向本人已知的物品或人物"}
@@ -88,6 +88,9 @@ func invoke(id: String, event_id: String, call: Dictionary) -> Dictionary:
 	var adapter=preload("res://scripts/skills/luau_world_adapter.gd").new();adapter.objects=world_objects
 	adapter.sim=sim;adapter.person_id=id;adapter.observation_id=call.arguments.target.observation_id if call.arguments.get("target") is Dictionary else observation.id
 	add_child(adapter);add_child(runtime);active[id]=runtime
+	adapter.retain_observation(observation.id)
+	for value in call.arguments.values():
+		if value is Dictionary:adapter.retain_observation(value.observation_id)
 	sim.actors[id].event_id=event_id
 	sim.actors[id]["skill_name"]=definition.name
 	_run(id,event_id,call.duplicate(true),definition,runtime,adapter,linked.context)
@@ -100,6 +103,7 @@ func _run(id: String, event_id: String, call: Dictionary, definition: Dictionary
 	if generation!=_generation: return
 	var returned: Variant=outcome.get("returned")
 	var success: bool=outcome.status=="completed" and returned is Dictionary and returned.get("ok")==true
+	var cancelled: bool=outcome.status=="cancelled" or outcome.get("code","")=="cancelled"
 	var goal_verified:=false
 	if definition.id in ["take_object","release_object"]:
 		var object: Dictionary=world_objects.objects.get(call.arguments.object,{})
@@ -125,9 +129,12 @@ func _run(id: String, event_id: String, call: Dictionary, definition: Dictionary
 	for step in outcome.get("trace",[]):
 		counts[step.operation]=counts.get(step.operation,0)+1
 		if step.operation not in ["perceive","recall_locations","walk_options"]:steps.append(step)
+	# 尾部原始轨迹可以限长，但供人物判断的动作摘要必须先覆盖全程。
+	outcome["phase_summary"]=preload("res://scripts/skills/egocentric_space.gd").execution_phases(outcome.get("trace",[]))
 	outcome["trace"]=steps.slice(maxi(0,steps.size()-32))
 	outcome["operation_counts"]=counts;outcome["full_evidence_path"]=evidence_path
 	var message: String=("世界状态验证通过" if goal_verified else "技能代码执行结束；整体目标仍需依据实际世界结果判断") if success else "技能执行未完成："+str(outcome.get("code",returned))
+	if cancelled:message="动作已停止；已发生的世界变化保留"
 	var facts: Array=adapter.world_facts.duplicate(true)
 	if not facts.is_empty():
 		var effect_counts: Dictionary={}
@@ -143,7 +150,13 @@ func _run(id: String, event_id: String, call: Dictionary, definition: Dictionary
 	if success and world_objects.objects.has(object_id):
 		var at: Vector3=world_objects.objects[object_id].body.global_position
 		remembered_position={"x":at.x,"y":at.y,"z":at.z}
-	finished.emit({"object_id":object_id,"world_position":remembered_position,"person_id":id,"source_event_id":event_id,"intent":"skill","skill_ref":call.ref,"skill_name":definition.name,"success":success,"goal_verified":goal_verified,"message":message,"runtime":outcome,"world_facts":facts})
+	finished.emit({"object_id":object_id,"world_position":remembered_position,"person_id":id,"source_event_id":event_id,"intent":"skill","skill_ref":call.ref,"skill_name":definition.name,"success":success,"cancelled":cancelled,"goal_verified":goal_verified,"message":message,"runtime":outcome,"world_facts":facts})
+
+func checkpoint_stop() -> void:
+	for id in active.keys():active[id].cancel()
+	for id in learning.keys():
+		_cancel_learning_worker(id,"session_checkpoint")
+		_end_learning(id,false,"存档中断编写，草稿保留")
 
 func cancel(id: String) -> void:
 	if active.has(id): active[id].cancel()
@@ -173,8 +186,22 @@ func request_learning(id: String, event: Dictionary, request: Dictionary) -> Dic
 		accepted[ticket]=true;learning[id]["original_event"]=event.duplicate(true);sim.actors[id].event_id=event.id
 	return started
 
+static func revision_event_error(event: Dictionary, ref: String) -> String:
+	if event.get("kind") in ["skill_ready","skill_revised"] or event.get("learning_failed",false):
+		return "学习结果本身不是新的修订依据，不能自动循环修订"
+	if event.get("kind") in ["skill_progress","skill_execution"]:
+		var result: Dictionary=event.get("result",{})
+		if result.is_empty() or result.get("cancelled",false) or result.get("runtime",{}).get("code","")=="cancelled":
+			return "自主修订须基于本人该版本的实际执行证据；取消或其他技能结果不能作为依据"
+		# 玩家请求可以先停动作再修订；此时依据是续办原请求，不是把停止当成目标技能失败。
+		if event.get("original_event",{}).get("speaker")=="player":return ""
+		if result.get("skill_ref","")!=ref:
+			return "自主修订须基于本人该版本的实际执行证据；取消或其他技能结果不能作为依据"
+	return ""
+
 func request_revision(id: String, event: Dictionary, request: Dictionary) -> Dictionary:
-	if event.get("kind") in ["skill_ready","skill_revised","skill_progress"]: return {"ok":false,"error":"学习完成通知不是新的教导，不能重复提交同一修订"}
+	var gate:=revision_event_error(event,request.ref)
+	if not gate.is_empty():return {"ok":false,"error":gate}
 	var definition:=library.resolve(id,request.ref)
 	if definition.is_empty(): return {"ok":false,"error":"人物尚未掌握此技能"}
 	var current:=false
@@ -205,8 +232,7 @@ func _begin_learning(id: String, goal: String, dependencies: Dictionary, revisio
 	var character_context: Dictionary=sim.space.prepare_context(id,store.context_for(id),sim.space.capture(id))
 	# 修订请求明确需要该技能的执行证据；只读相关记录，不恢复整包历史注入。
 	if not revision.is_empty():
-		var evidence: Dictionary=store.memory.recall(id,{"kind":"action","keywords":[str(revision.ref)],"limit":4})
-		character_context["execution_results"]=evidence.records.map(func(item): return item.data) if evidence.ok else []
+		character_context["execution_results"]=store.execution_evidence(id,str(revision.ref))
 		for record in character_context.execution_results:
 			if record.get("world_position") is Dictionary:
 				var p: Dictionary=record.world_position
@@ -214,7 +240,7 @@ func _begin_learning(id: String, goal: String, dependencies: Dictionary, revisio
 				record["observation_id"]=character_context.space_observation.id
 			record.erase("world_position")
 		character_context["heard_events"]=[revision.player_event.duplicate(true)]
-	character_context["body_control"]=preload("res://scripts/skills/body_motor.gd").describe(sim.actors[id].skeleton)
+	character_context["interaction_rules"]={"mode":"simplified","range_m":preload("res://scripts/skills/interaction_range.gd").RADIUS_M,"meaning":"骨骼不决定普通行为成败；使用当前世界操作目录，近距、可见性、归属与库存真实结算。"}
 	var owned: Dictionary={}
 	for entry in library.describe(id):
 		var bundle:=library.execution_context(id,entry.ref)

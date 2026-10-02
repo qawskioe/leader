@@ -1,6 +1,8 @@
 extends RefCounted
 ## 调用句柄只在本次请求中有效；存档与执行仍使用内容寻址的完整版本引用。
 static func bind(context: Dictionary, event: Dictionary) -> Dictionary:
+	# owners完整版本历史只供宿主保存/执行；本轮可调用版本已由available_skills给出。
+	context.erase("skill_refs")
 	var forward: Dictionary={};var reverse: Dictionary={}
 	for skill in context.get("available_skills",[]):
 		var handle:="skill_%d"%(reverse.size()+1)

@@ -14,6 +14,7 @@ def failed_draft(folder, request):
             if json.loads(status_file.read_text(encoding='utf-8')).get('state')!='failed':continue
             old=json.loads((previous/'build_request.json').read_text(encoding='utf-8'))
             if old.get('goal_id')!=request['goal_id'] or old.get('verification_snapshot',{}).get('person_id')!=person:continue
+            if old.get('revision',{}).get('ref')!=request.get('revision',{}).get('ref'):continue
             definition=json.loads((previous/'candidate_definition.json').read_text(encoding='utf-8'))
             program=json.loads(definition['program_json'])
             packet={'job':previous.name,'source':program['source'],'parameters':definition['parameters'],

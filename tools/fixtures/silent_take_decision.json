@@ -1,0 +1,29 @@
+{
+  "conversation": {
+    "addressees": [
+      "person_003"
+    ],
+    "participation": "reply",
+    "reason": "玩家正面对我，明确点我的名字让我拿木块，是在对我下命令。"
+  },
+  "intent": "none",
+  "private_interpretation": "发光的领导者让我拿起那块木块，木块就在手边，我有拿取物品的本事，直接动手就是。",
+  "public_reply": "",
+  "speech_style": "沉默照做，不迟疑也不多话。",
+  "speech_act": "reply",
+  "addressed_person": "",
+  "routing_reason": "命令明确可执行，调用已掌握的拿取物品技能，目标为眼前可见的木块。",
+  "capability_gap": null,
+  "learning_request": null,
+  "revision_request": null,
+  "skill_dialogue": null,
+  "shared_skill_knowledge": [],
+  "skill_call": {
+    "ref": "take_object@2515a6e1f7eaf928c3cdae3fff59cf66d5f9ea431cef70d2cd714f4b84c866af",
+    "arguments": {
+      "object": "wood_block"
+    }
+  },
+  "shared_knowledge": [],
+  "request_kind": ""
+}

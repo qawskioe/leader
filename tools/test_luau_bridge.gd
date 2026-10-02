@@ -18,8 +18,10 @@ func run() -> void:
 	var result: Dictionary=await runtime.run('return function(args, context) local function twice(x) return x*2 end local r=world.request("count",{amount=twice(args.amount)}) return {ok=r.ok,total=r.changed} end',{"amount":3},{},api,["count"])
 	assert(result.status=="completed" and result.returned.total==6 and api.changed==6)
 	# 大消息持续收到分块确认时不应触发两秒无响应超时。
+	var transfer_started:=Time.get_ticks_msec()
 	result=await runtime.run('return function(args, context) return {ok=true,size=#context.payload} end',{},{"payload":"x".repeat(131072)},api,[])
 	assert(result.status=="completed" and result.returned.size==131072,"完整传输大上下文，不能把传输中误报为服务失联")
+	print("LUAU_TRANSFER_128K_MS ",Time.get_ticks_msec()-transfer_started)
 	create_timer(0.005).timeout.connect(runtime.cancel)
 	result=await runtime.run('return function() return world.request("count",{amount=100}) end',{},{},api,["count"])
 	assert(result.status=="cancelled")

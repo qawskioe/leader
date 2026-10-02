@@ -8,6 +8,5 @@ return function(args,context)
     local touched=skills.call("touch",{source=found.object},context)
     if not touched.ok then return touched end
     local stored=world.request("put_unit",{target=found.object})
-    world.request("relax",{seconds=0.4})
     return stored
 end

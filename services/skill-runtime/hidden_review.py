@@ -52,6 +52,12 @@ def run_hidden(args, timeout=65):
                         return subprocess.CompletedProcess(args,process.returncode,stdout,stderr)
                     except subprocess.TimeoutExpired:
                         pass
-            except BaseException:
-                process.kill();process.communicate()
+            except BaseException as error:
+                # Windows控制台启动器会派生Godot子进程；只杀启动器会留下持有输出管道的子进程。
+                if os.name=='nt':
+                    subprocess.run(['taskkill.exe','/PID',str(process.pid),'/T','/F'],capture_output=True,timeout=10,creationflags=subprocess.CREATE_NO_WINDOW)
+                else:process.kill()
+                stdout,stderr=process.communicate(timeout=10)
+                if isinstance(error,subprocess.TimeoutExpired):
+                    error.output=stdout;error.stderr=stderr
                 raise

@@ -7,6 +7,8 @@ class WorkspaceTests(unittest.TestCase):
     def test_game_owned_artifacts_git_and_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:
             w=Workspace(Path(tmp),{'goal_id':'g','world_operations':[],'character_context':{},'owned_skills':{}},{'source':'return 1','name':'test'},'sdk',{}, {})
+            self.assertEqual(w.path('reference/principles.md').read_text(encoding='utf-8'),Path(__file__).with_name('authoring_principles.md').read_text(encoding='utf-8'))
+            with self.assertRaises(ValueError):w.path('reference/principles.md',write=True)
             (w.root/'source.luau').write_text('return 2')
             self.assertIn('+return 2',w.git('diff',w.base))
             ref=w.checkpoint('tested')

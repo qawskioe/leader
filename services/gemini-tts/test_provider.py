@@ -27,6 +27,21 @@ DONE = {'event_type': 'interaction.completed', 'interaction': {'status': 'comple
 
 
 class ProviderTests(unittest.TestCase):
+    def test_structured_style_never_enters_transcript(self):
+        request = provider.build_request({'text':'好，我听你的。','style':'压住委屈','voice':'Kore'})
+        part = request['input'][0]['content'][0]
+        self.assertEqual(part['text'], '好，我听你的。')
+        self.assertEqual(part['annotations'], [{'type':'speech_metadata','style':'压住委屈'}])
+        self.assertEqual(request['model'], 'gemini-3.8-flash-tts')
+        self.assertEqual(request['response_format']['mime_type'], 'audio/l16')
+        self.assertTrue(request['stream'])
+
+    def test_each_character_voice_is_forwarded(self):
+        for voice in ['Puck', 'Aoede', 'Kore', 'Charon']:
+            with self.subTest(voice=voice):
+                body = provider.build_request({'text':'好','style':'平静','voice':voice})
+                self.assertEqual(body['generation_config']['speech_config'], [{'voice':voice}])
+
     def test_quota_sse_and_json(self):
         value = {'error':{'message':'Quota exceeded: generate_content_free_tier_requests, limit: 10, model: tts\nPlease retry in 29.13s.'}}
         encoded = json.dumps(value).encode()

@@ -38,28 +38,46 @@
     "internal": true
   },
   {
+    "id": "locate_resource",
+    "name": "寻找可见资源",
+    "description": "沿本人已知线索寻找并重新观察可用资源；旧线索未确认时有限检查其他候选，不读取未知真实位置。找到不代表已拿到。",
+    "parameters": {
+      "kind": "资源种类"
+    },
+    "capabilities": [
+      "perceive",
+      "recall_locations",
+      "look_toward"
+    ],
+    "dependencies": {
+      "go": "go_to_known"
+    },
+    "parameter_kinds": {
+      "kind": "text"
+    },
+    "internal": true
+  },
+  {
     "id": "touch_source",
-    "name": "接触物资",
-    "description": "用右手接触可见物资或容器开口，必要时调整身体。",
+    "name": "确认物资可操作",
+    "description": "按已知位置寻找并检查当前可见、近距与归属；不以骨骼接触判定。",
     "parameters": {
       "source": "本人已知来源"
     },
     "capabilities": [
       "perceive",
-      "contact_point",
-      "reach_point",
-      "pose",
-      "body_point",
-      "relax"
+      "access_source"
     ],
-    "dependencies": {},
+    "dependencies": {
+      "go": "go_to_known"
+    },
     "parameter_kinds": {},
     "internal": true
   },
   {
     "id": "take_in_hand",
     "name": "用指定手拿取",
-    "description": "程序自动走近、选择近处站位、配合身体伸手并拿住；有限微调后仍失败才返回原因。",
+    "description": "近距可见且空手时直接建立固定持有连接；远处先按已知位置走近，不要求骨骼精确接触。",
     "parameters": {
       "object": "本人已知物品",
       "hand": "Hand.L或Hand.R"
@@ -67,14 +85,8 @@
     "capabilities": [
       "perceive",
       "observe",
-      "reach",
-      "plan_grasp",
-      "reach_with_body",
       "grasp",
-      "relax",
-      "change_grip",
-      "look_toward",
-      "approach"
+      "change_grip"
     ],
     "dependencies": {
       "go": "go_to_known"
@@ -87,7 +99,7 @@
   {
     "id": "take_object",
     "name": "拿取物品",
-    "description": "自动前往本人已知物品，选空手、调整站位和身体、接触后拿住。距离微调在程序内完成，无需模型拆成走近/下蹲/伸手。物品被占用、不可达或有限重试失败时返回明确原因。",
+    "description": "选择空手并前往已知物品，在可见且合理距离内拿取。占手、被别人持有、遮挡或不可达返回真实失败，不依赖精细伸手。",
     "parameters": {
       "object": "本人已知的可抓取物品ID"
     },
@@ -104,14 +116,11 @@
   },
   {
     "id": "bring_to_mouth",
-    "name": "送到嘴边食用",
-    "description": "将手中一份可食用物资送到嘴边，接触后才实际消耗。",
+    "name": "食用手中物资",
+    "description": "经过食用时间后消耗本人手中物资，不要求手嘴对齐；取消不消耗。",
     "parameters": {},
     "capabilities": [
-      "body_point",
-      "reach_point",
-      "consume_unit",
-      "relax"
+      "consume_unit"
     ],
     "dependencies": {},
     "parameter_kinds": {},
@@ -119,25 +128,19 @@
   },
   {
     "id": "align_container",
-    "name": "将容器开口接近目标",
-    "description": "以开口与握持点的相对位置调整手臂；接触后才装水或饮用。",
+    "name": "饮用或装填容器",
+    "description": "饮用本人持有的容器内容，或走近可见来源装填；不要求开口精确接触。",
     "parameters": {
       "object": "本人持有的容器",
       "destination": "本人已知来源或mouth"
     },
     "capabilities": [
-      "perceive",
-      "inspect_contents",
-      "observe",
-      "body_point",
-      "contact_point",
-      "reach_point",
       "consume_contents",
-      "fill_container",
-      "relax",
-      "pose"
+      "fill_container"
     ],
-    "dependencies": {},
+    "dependencies": {
+      "access": "touch_source"
+    },
     "parameter_kinds": {
       "destination": "text"
     },
@@ -146,7 +149,7 @@
   {
     "id": "fill_water_bag",
     "name": "拿取并装水",
-    "description": "使用本人已知水袋和水源，实际接触装水，保持持有。",
+    "description": "拿取本人已知水袋，走近可见水源装水并保持持有。",
     "parameters": {},
     "capabilities": [
       "perceive",
@@ -164,32 +167,38 @@
   {
     "id": "fetch_food",
     "name": "拿一份食物",
-    "description": "从本人已知储食处拿一份食物，拿在手中；不自动吃或交给别人。",
-    "parameters": {},
+    "description": "从指定的已知来源拿一份食物；hand表示使用手中已有食物。不自动吃、不更换来源。",
+    "parameters": {
+      "source": "本人选择的已知食物来源ID（储食处或容器）；使用手中已有的一份食物时填hand。来源为空或不可用时返回失败，不改选其他地方。"
+    },
     "capabilities": [
       "perceive",
-      "take_unit",
-      "relax"
+      "take_unit"
     ],
     "dependencies": {
-      "find": "find_resource",
       "go": "go_to_known",
       "touch": "touch_source"
     },
-    "parameter_kinds": {},
+    "parameter_kinds": {
+      "source": "text"
+    },
     "internal": false
   },
   {
     "id": "eat",
     "name": "吃一份食物",
-    "description": "已有手中食物就食用，否则前往已知储食处取食；身体送到嘴边后消耗。",
-    "parameters": {},
+    "description": "从本人指定来源取得一份食物并食用；手中已有食物用source=hand。来源由本人选择，程序检查距离、占用和实际库存。",
+    "parameters": {
+      "source": "本人选择的已知食物来源ID（储食处或容器）；使用手中已有的一份食物时填hand。来源为空或不可用时返回失败，不改选其他地方。"
+    },
     "capabilities": [],
     "dependencies": {
       "fetch": "fetch_food",
       "consume": "bring_to_mouth"
     },
-    "parameter_kinds": {},
+    "parameter_kinds": {
+      "source": "text"
+    },
     "internal": false
   },
   {
@@ -215,9 +224,10 @@
   {
     "id": "give_food",
     "name": "递送食物",
-    "description": "先取得一份食物，再前往本人已知接收者附近，实际递交；对方可拒绝。",
+    "description": "从本人指定来源取得一份食物，走近指定接收者后实际递交；hand表示递交手中已有食物，对方可拒绝。",
     "parameters": {
-      "recipient": "本人已知人物ID或player"
+      "recipient": "本人已知人物ID或player",
+      "source": "本人选择的已知食物来源ID（储食处或容器）；使用手中已有的一份食物时填hand。来源为空或不可用时返回失败，不改选其他地方。"
     },
     "capabilities": [
       "give_unit"
@@ -226,13 +236,15 @@
       "fetch": "fetch_food",
       "go": "go_to_known"
     },
-    "parameter_kinds": {},
+    "parameter_kinds": {
+      "source": "text"
+    },
     "internal": false
   },
   {
     "id": "store_food",
     "name": "存放指定篮中食物",
-    "description": "拿起指定篮子，将其中及手中食物带到已知储食处逐份存入，最后松手。不替换为其他篮子。",
+    "description": "拿起指定篮子，将其中及手中食物带到已知储食处逐份存入，最后松手。不替换为其他篮子。 空容器仍由本人持有，是否放下另行决定。",
     "parameters": {
       "container": "本人已知篮子ID"
     },
@@ -240,9 +252,7 @@
       "perceive",
       "inspect_contents",
       "take_unit",
-      "put_unit",
-      "release",
-      "relax"
+      "put_unit"
     ],
     "dependencies": {
       "find": "find_resource",
@@ -262,15 +272,15 @@
       "perceive",
       "inspect_contents",
       "take_unit",
-      "put_unit",
-      "relax"
+      "put_unit"
     ],
     "dependencies": {
       "find": "find_resource",
       "go": "go_to_known",
       "hold": "take_in_hand",
       "touch": "touch_source",
-      "store": "store_food"
+      "store": "store_food",
+      "locate": "locate_resource"
     },
     "parameter_kinds": {},
     "internal": false
@@ -325,14 +335,13 @@
   {
     "id": "store_held_food",
     "name": "存入手中的食物",
-    "description": "将右手的一份食物带到本人已知储食处，实际接触后存入，不额外寻找篮子。",
+    "description": "将手中的一份食物带到本人已知储食处，实际接触后存入，不额外寻找篮子。",
     "parameters": {},
     "parameter_kinds": {},
     "internal": false,
     "capabilities": [
       "perceive",
-      "put_unit",
-      "relax"
+      "put_unit"
     ],
     "dependencies": {
       "find": "find_resource",

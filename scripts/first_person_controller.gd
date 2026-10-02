@@ -93,6 +93,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func _notification(what: int) -> void:
 	if is_vr_active(): return
 	if what==NOTIFICATION_APPLICATION_FOCUS_OUT:
+		var bridge:=get_parent().get_node_or_null("VoiceTest/PlayerControl")
+		if bridge!=null and bridge.active:return # 桥接会在本次输入结束后释放真实鼠标。
 		Input.mouse_mode=Input.MOUSE_MODE_VISIBLE
 	elif what==NOTIFICATION_APPLICATION_FOCUS_IN and is_instance_valid(camera):
 		if not _mouse_dialog_open(): Input.mouse_mode=Input.MOUSE_MODE_CAPTURED

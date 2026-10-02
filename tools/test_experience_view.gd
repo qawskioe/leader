@@ -1,0 +1,26 @@
+extends SceneTree
+func _initialize():
+	var view=preload("res://scripts/voice/experience_view.gd").new()
+	var working:={"recent_turns":[],"task":{"request":{"id":"task","text":"采果后交给小花，不要放进储食处"},"progress":[]}}
+	for i in 500:
+		working.recent_turns.append({"event":{"id":"e%d"%i,"kind":"skill_execution","speaker":"world","text":"实际只走到中间点","result":{"trace":[{"operation":"approach","data":"x".repeat(4000)}]}}})
+	working.recent_turns.append({"event":{"id":"latest","speaker":"player","text":"先停下来，别再采了"}})
+	var before:=JSON.stringify(working)
+	var packet: Dictionary=view.build(working)
+	assert(packet.recent_turns.size()==12 and packet.recent_turns[-1].event.text=="先停下来，别再采了")
+	assert(packet.task.request.text==working.task.request.text)
+	assert(JSON.stringify(packet).length()<14000)
+	assert(JSON.stringify(working)==before,"不改变当天记忆")
+	var page: Dictionary=view.read({"ref":packet.earlier_today.action.experience_ref,"limit":1})
+	assert(page.ok and page.records[0].event_id=="e0" and page.total==489)
+	var found: Dictionary=view.read({"ref":packet.earlier_today.action.experience_ref,"keywords":["e488"]})
+	assert(found.ok and found.records.size()==1 and found.records[0].event_id=="e488")
+	var detail: Dictionary=view.read({"ref":page.records[0].detail.experience_ref})
+	assert(detail.ok and detail.fields.event.id=="e0")
+	assert(not view.read({"ref":"../other_person"}).ok)
+	assert(not view.read({"ref":packet.earlier_today.action.experience_ref,"offset":-1}).ok)
+	assert(not view.read({"ref":packet.earlier_today.action.experience_ref,"limit":9}).ok)
+	var other=preload("res://scripts/voice/experience_view.gd").new()
+	assert(not other.read({"ref":packet.earlier_today.action.experience_ref}).ok,"不能读取其他人的目录")
+	print("EXPERIENCE_VIEW_PASSED recent_request_preserved_paged_500_events_no_mutation")
+	quit()

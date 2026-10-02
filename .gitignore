@@ -18,4 +18,9 @@ runtime/
 .DS_Store
 Thumbs.db
 
+# Assets are distributed with the existing checksummed release pack.
 /assets/
+/migration-prep/
+/previews/
+# Test-only UIDs are generated locally; preserve tracked public UIDs.
+/tools/*.gd.uid

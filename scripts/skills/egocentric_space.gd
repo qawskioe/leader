@@ -3,9 +3,26 @@ extends RefCounted
 const Target=preload("res://scripts/skills/spatial_target.gd")
 var sim: Node
 var frames: Dictionary={}
+var retained_frames: Dictionary={}
 var serial:=0
 var near_range_m:=10.0
 var far_resolution_m:=10.0
+
+func retain_frame(person: String, token: String) -> bool:
+	if not frames.has(token) or frames[token].person!=person:return false
+	retained_frames[token]=int(retained_frames.get(token,0))+1
+	return true
+
+func release_frame(token: String) -> void:
+	assert(retained_frames.has(token),"观察租约必须成对释放")
+	retained_frames[token]-=1
+	if retained_frames[token]==0:retained_frames.erase(token)
+	_trim_frames()
+
+func _trim_frames() -> void:
+	for token in frames.keys():
+		if frames.size()-retained_frames.size()<=64:break
+		if not retained_frames.has(token):frames.erase(token)
 
 static func xyz(at: Vector3) -> Dictionary:
 	return {"x":at.x,"y":at.y,"z":at.z}
@@ -17,11 +34,14 @@ func capture(id: String) -> Dictionary:
 	var forward:=Vector3(sin(body.rotation.y),0,cos(body.rotation.y))
 	var transform:=Transform3D(Basis(forward.cross(Vector3.UP),Vector3.UP,forward),body.global_position)
 	frames[token]={"person":id,"transform":transform,"created_ms":Time.get_ticks_msec()}
-	if frames.size()>64: frames.erase(frames.keys()[0])
+	_trim_frames()
 	var observation:={"id":token,"unit":"metre","origin":"本人脚底中心，观察瞬间固定","axes":{"x":"右","y":"上","z":"前"},"self_position":xyz(Vector3.ZERO),"self_forward":xyz(Vector3(0,0,1)),"view":{"eye":xyz(Vector3(0,1.6,0)),"range":10.0,"half_angle_degrees":80.0},"landmarks":{},"ground_samples":[],"occlusion_samples":[],"sample_spacing":0.75,"unknown_rule":"仅描述本次可见采样；未知不是空地。点间未采样部分不保证通行。路线与下一步目标由人物选择。"}
 	observation["body_bounds"]=bounds(body,transform)
-	var motor=preload("res://scripts/skills/body_motor.gd").new();motor.initialize(sim.actors[id],id)
-	observation["hands"]={"right":xyz(transform.affine_inverse()*motor.point("Hand.R")),"left":xyz(transform.affine_inverse()*motor.point("Hand.L"))}
+	var body_state: RefCounted=body.get_meta("body_state") if body.has_meta("body_state") else null
+	if body_state==null:
+		body_state=preload("res://scripts/skills/body_state.gd").new();body_state.initialize(sim.actors[id],id)
+	observation["hands"]={"right":xyz(transform.affine_inverse()*body_state.point("Hand.R")),"left":xyz(transform.affine_inverse()*body_state.point("Hand.L"))}
+	observation["hands_meaning"]="固定交互槽，用于选择左右手；不代表动画骨骼的实时手掌位置"
 	for key in sim.perception.memories.get(id,{}):
 		var entry: Dictionary=sim.perception.known(id,key)
 		var p: Array=entry.position
@@ -48,9 +68,14 @@ func capture(id: String) -> Dictionary:
 					var obstruction:=physics.intersect_ray(PhysicsRayQueryParameters3D.create(eye,point,1,exclusions))
 					if obstruction.is_empty():
 						sample={"probe":xyz(local),"position":xyz(transform.affine_inverse()*floor_hit.position),"normal":xyz(transform.basis.inverse()*floor_hit.normal),"state":"visible_surface","slope_degrees":rad_to_deg(floor_hit.normal.angle_to(Vector3.UP))}
-						var covering_water:=visible_water_above(id,floor_hit.position)
-						sample["surface_kind"]="dry_ground" if covering_water.is_empty() else "submerged_ground"
-						if not covering_water.is_empty(): sample["water_surface"]=xyz(transform.affine_inverse()*covering_water.position)
+						# 首个可见命中可能是物品/人物顶部，不能标成地面或继续穿透查找地面。
+						if floor_hit.collider is RigidBody3D or floor_hit.collider is CharacterBody3D:
+							sample["state"]="visible_object_surface"
+							sample["surface_kind"]="person" if floor_hit.collider is CharacterBody3D else "movable_object"
+						else:
+							var covering_water:=visible_water_above(id,floor_hit.position)
+							sample["surface_kind"]="dry_ground" if covering_water.is_empty() else "submerged_ground"
+							if not covering_water.is_empty(): sample["water_surface"]=xyz(transform.affine_inverse()*covering_water.position)
 					else:
 						observation.occlusion_samples.append({"position":xyz(transform.affine_inverse()*obstruction.position),"normal":xyz(transform.basis.inverse()*obstruction.normal)})
 			observation.ground_samples.append(sample)
@@ -74,8 +99,8 @@ func capture(id: String) -> Dictionary:
 	observation["near_field"]=near;observation["far_field"]=far
 	return observation
 
-func resolve(id: String, target: Variant) -> Dictionary:
-	if not target is Dictionary or not Target.valid(target): return {"ok":false,"code":"invalid_spatial_target"}
+func resolve(id: String, target: Variant, max_component: float=10.0) -> Dictionary:
+	if not target is Dictionary or not Target.valid(target,max_component): return {"ok":false,"code":"invalid_spatial_target"}
 	var frame: Dictionary=frames.get(target.observation_id,{})
 	if frame.is_empty() or frame.person!=id: return {"ok":false,"code":"unknown_observation"}
 	if Time.get_ticks_msec()-int(frame.created_ms)>300000: return {"ok":false,"code":"observation_expired"}
@@ -117,6 +142,33 @@ func prepare_context(id: String, context: Dictionary, observation: Dictionary) -
 	result["memory_access"]={"kinds":["heard","reflection","action","landmark","skill","fact","relationship"],"usage":"需要过去信息时先请求recall；空keywords表示该类最近记录。不是所有记忆都在当前输入里。"}
 	return result
 
+static func release_location(object_id: String, grip: Vector3, frame: Transform3D, token: String, known: Dictionary, near_range: float) -> Dictionary:
+	# 只使用本人记住的参考点；不能查询物体当前真值来更新离开视野后的情报。
+	var references: Dictionary={}
+	for key in known:
+		if key==object_id: continue
+		var entry: Dictionary=known[key]
+		var p: Array=entry.position
+		var remembered:=Vector3(p[0],p[1],p[2])
+		if frame.origin.distance_to(remembered)>near_range: continue
+		var offset: Vector3=frame.basis.inverse()*(grip-remembered)
+		references[key]={"offset_from_reference":xyz(offset),"horizontal_distance_m":Vector2(offset.x,offset.z).length(),"reference_visible_at_release":entry.get("visible_now",false),"source":entry.get("source",""),"observed_at_seconds":entry.get("observed_at_seconds",0),"position_error_per_axis_m":entry.get("position_error_per_axis_m",0)}
+	return {"observation_id":token,"grip_position":xyz(frame.affine_inverse()*grip),"unit":"metre","axes":{"x":"右","y":"上","z":"前"},"known_references":references,"meaning":"松手瞬间物体抓握点的位置，不是落稳后的位置；参考点不可见时使用最后已知位置，不证明它现在仍在那里。坐标系固定在observation_id对应的本人观察瞬间；不能当作当前站位坐标。"}
+
+static func execution_phases(trace: Array) -> Array:
+	var phases: Array=[]
+	for step in trace:
+		if not step is Dictionary or not step.get("result") is Dictionary or step.get("operation","") in ["perceive","recall_locations","walk_options"]:continue
+		var phase:={"operation":step.get("operation",""),"ok":step.result.get("ok"),"code":step.result.get("code","")}
+		for key in ["object","material","quantity","distance_m","contact_limit_m"]:
+			if step.result.has(key):phase[key]=step.result[key]
+		if step.result.get("release_location") is Dictionary:phase["release_location"]=step.result.release_location.duplicate(true)
+		if step.has("elapsed_ms"):phase["elapsed_ms"]=step.elapsed_ms
+		if step.result.get("timing") is Dictionary:phase["timing"]=step.result.timing.duplicate(true)
+		if step.get("arguments") is Dictionary and step.arguments.has("seconds"):phase["requested_seconds"]=step.arguments.seconds
+		phases.append(phase)
+	return phases
+
 static func sanitize_event(event: Dictionary) -> void:
 	# 听闻已有方向/距离，不再附带玩家世界坐标；内部事件保留原命令但移除原始轨迹。
 	event.erase("source_position");event.erase("positions")
@@ -127,6 +179,17 @@ static func sanitize_event(event: Dictionary) -> void:
 		var returned: Dictionary=runtime.get("returned",{}) if runtime.get("returned") is Dictionary else {}
 		var message: String=str(event.result.get("skill_name","动作"))+"："+str(runtime.get("code",returned.get("code","")))
 		if event.get("text") is String and event.result.get("message") is String: event.text=event.text.replace(event.result.message,message)
+		var phases: Array=runtime.get("phase_summary",execution_phases(runtime.get("trace",[])))
+		event.result["execution_summary"]={"complete_action_history":runtime.has("phase_summary"),"status":runtime.get("status",""),"elapsed_ms":runtime.get("elapsed_ms",0),"phases":phases,"meaning":"phases按实际执行顺序排列，省略纯感知采样；complete_action_history=false时旧记录可能只有尾部，不可因未列出而断言此前没做；feedback只是最后返回值，不代表整段动作。requested_seconds是请求时长，实际耗时看elapsed_ms/timing。success只说明执行是否报错；goal_verified=false表示宿主未确认整体目标，不等于已经证实失败。请结合原要求和各阶段证据判断。"}
+		var failures: Array=[]
+		for step in runtime.get("trace",[]):
+			if not step is Dictionary or not step.get("result") is Dictionary or step.result.get("ok",true):continue
+			var failure:={"operation":step.get("operation",""),"code":step.result.get("code","")}
+			# 只给本人的操作与测得距离，不泄露回放路径或世界绝对坐标。
+			for key in ["distance_m","contact_limit_m"]:
+				if step.result.has(key):failure[key]=step.result[key]
+			failures.append(failure)
+		if not failures.is_empty():event.result["failed_attempts"]=failures.slice(-8)
 		event.result["feedback"]=returned.duplicate(true)
 		event.result.message=message+"；"+str(returned.get("message",""))
 		event.result.erase("runtime")

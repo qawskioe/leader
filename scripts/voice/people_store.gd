@@ -174,7 +174,7 @@ func remember(id: String, event_id: String, decision: Dictionary, action_snapsho
 	memory.put(id,"reflection",event_id,people[id].reflections[-1],0.4)
 
 func is_person_request(event: Dictionary) -> bool:
-	return event.get("speaker")=="player" or (people.has(event.get("speaker","")) and event.get("kind") in ["social_request","information_request"])
+	return event.get("speaker")=="player" or (people.has(event.get("speaker","")) and event.get("kind") in ["social_request","information_request","item_offer"])
 
 func mark_reply(id: String, event_id: String, status: String) -> void:
 	assert(status in ["正在向玩家播放，尚未完整说完","已向玩家播放完成；未投递给其他成员","已播放完成；附近成员听闻另行记录","播放失败，不能确认玩家听到了完整答复"])
@@ -196,8 +196,17 @@ func record_execution(result: Dictionary) -> void:
 		working_tasks[result.person_id].progress.append(outcome.result.duplicate(true))
 		if working_tasks[result.person_id].get("state")!="cancelled":
 			working_tasks[result.person_id].state="awaiting_judgement"
+	# 本人刚做过的动作属于当天经历；自主行动也不能只存入需要检索的长期记录。
+	var feedback:={"id":str(result.source_event_id)+"/execution/"+str(result.get("skill_ref",result.get("intent","action"))),"kind":"skill_execution","speaker":"world","text":str(result.get("message","动作结果")),"result":record.duplicate(true)}
+	preload("res://scripts/skills/egocentric_space.gd").sanitize_event(feedback)
+	hear(result.person_id,feedback)
 	person.execution_results.append(record)
 	memory.put(result.person_id,"action",str(result.source_event_id)+"/"+str(result.get("skill_ref",result.get("intent","action"))),record,0.5)
+
+func execution_evidence(id: String, ref: String) -> Array:
+	# 修订读取本人该版本的真实执行记录，包含尚未日终整理的短期动作。
+	# 不能用只检索长期记忆的recall代替，否则刚发生的失败会被漏掉。
+	return people[id].execution_results.filter(func(record):return record.get("skill_ref","")==ref).slice(-4).duplicate(true)
 
 func save_snapshot(path: String) -> Error:
 	var memory_error: String=memory.save()

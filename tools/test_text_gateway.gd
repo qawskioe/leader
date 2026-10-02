@@ -15,16 +15,16 @@ class FakeGateway extends Node:
 		await get_tree().process_frame
 		active -= 1
 		if invalid: return {"ok":true,"text":"无效结构"}
-		return {"ok":true,"text":JSON.stringify({"intent":"none","recipient_id":"","capability_gap":null,"private_interpretation":"本人测试理解","speech_act":"statement","addressed_person":"","speech_style":"neutral","public_reply":"收到","routing_reason":"测试不触发本地升级"})}
+		return {"ok":true,"text":JSON.stringify({"intent":"none","capability_gap":null,"private_interpretation":"本人测试理解","speech_act":"statement","addressed_person":"","speech_style":"neutral","public_reply":"收到","routing_reason":"测试不触发本地升级","task_status":"none","task_handling":{"state":"none","scope":"independent","reason":"确认收到"},"conversation":{"participation":"reply","addressees":[],"reason":"测试交谈"}})}
 
 func _initialize() -> void:
 	_run.call_deferred()
 
 func _run() -> void:
 	var store := Store.new()
-	assert(store.initialize().is_empty())
-	store.people.person_001.known_facts.append("PRIVATE_A_574")
-	store.people.person_002.known_facts.append("PRIVATE_B_936")
+	assert(store.initialize("res://data/people.json","user://gateway_test_%d.json"%Time.get_ticks_usec(),true).is_empty())
+	store.hear("person_001",{"id":"private_a","speaker":"body","kind":"body_state","text":"PRIVATE_A_574"})
+	store.hear("person_002",{"id":"private_b","speaker":"body","kind":"body_state","text":"PRIVATE_B_936"})
 	var client := FakeGateway.new()
 	root.add_child(client)
 	var pipeline := Pipeline.new()
@@ -45,12 +45,14 @@ func _run() -> void:
 	pipeline.run({"id":"invalid","listeners":["person_001"]},{"text_gateway":true})
 	await pipeline.completed
 	assert(reports[2].has("error") and store.people.person_001.reflections.size()==1,"无效输出不能记为计划")
-	var request_data: Dictionary = JSON.parse_string(client.prompts[2].split("\n")[-1])
+	var wire_lines: Array=Array(client.prompts[2].split("\n")).filter(func(line):return line.begins_with('{"self":'))
+	assert(wire_lines.size()==1)
+	var request_data: Dictionary = JSON.parse_string(wire_lines[0])
 	assert(request_data.current_event.id=="invalid","新事件不能被旧问题覆盖")
 	assert(not request_data.current_event.has("listeners"),"当前事件也必须隔离听众名单")
-	assert(request_data.self.reflections[0].public_reply_status.begins_with("已向玩家播放完成"),"模型必须知道上一句已向玩家说完")
+	assert(JSON.stringify(request_data.self.working_context).contains("已向玩家播放完成"),"模型必须知道上一句已向玩家说完")
 	var cloud = load("res://scripts/voice/cloud_client.gd")
-	var valid := {"intent":"none","recipient_id":"","capability_gap":null,"private_interpretation":"饿","speech_act":"statement","addressed_person":"","speech_style":"neutral","public_reply":"","routing_reason":"简单"}
+	var valid := {"intent":"none","capability_gap":null,"private_interpretation":"饿","speech_act":"statement","addressed_person":"","speech_style":"neutral","public_reply":"","routing_reason":"简单"}
 	assert(cloud.validate_decision(JSON.stringify(valid)).ok,"允许沉默与空计划")
 	var legacy: Dictionary=valid.duplicate(true)
 	legacy.erase("speech_act")

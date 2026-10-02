@@ -14,8 +14,7 @@ static func prepare(voice: Node, path: String="user://skills/egocentric/playtest
 	var actor: Dictionary=sim.actors.person_003
 	actor.body.global_position=sim.water.SOURCE+Vector3(0,0.6,-0.45);actor.body.rotation.y=0
 	for frame in 30: await voice.get_tree().physics_frame
-	var motor=preload("res://scripts/skills/body_motor.gd").new();motor.initialize(actor,"person_003")
-	populate(sim,voice.skills.world_objects,motor,"person_003")
+	populate(sim,voice.skills.world_objects,"person_003")
 	var player: Node3D=voice.get_parent().get_node("Player")
 	player.global_position=actor.body.global_position+Vector3(-1.5,0.7,2.0)
 	player.look_at(Vector3(actor.body.global_position.x,player.global_position.y,actor.body.global_position.z))
@@ -23,7 +22,7 @@ static func prepare(voice: Node, path: String="user://skills/egocentric/playtest
 	voice.log_event({"type":"luau_playtest_ready","person_id":"person_003","message":"大山已会拿取、松手、指定位置放置、转身观察和走到可见地面附近。可说：大山，拿起木块；把木块放在你脚边；松手则允许物品自然掉落。E 可教导修改动作。","library":path})
 	print("LUAU_PLAYTEST_READY builtin_count=",voice.store.people.person_003.available_skills.size())
 
-static func populate(sim: Node, objects: Node, motor: RefCounted, person: String) -> void:
+static func populate(sim: Node, objects: Node, person: String) -> void:
 	for id in ["wood_block","stone_tool"]:
 		if objects.objects.has(id): continue
 		var body:=RigidBody3D.new();body.name=id;body.freeze=false;body.collision_layer=1;body.collision_mask=1;sim.scene.add_child(body)

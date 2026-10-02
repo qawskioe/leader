@@ -15,6 +15,8 @@ func run() -> void:
 		# 隔离持有到自由刚体的交接；不让手部动画影响固定重现位置。
 		objects.register_object("stone",body)
 		objects.objects.stone.holder="person_003";objects.objects.stone.hand="Hand.L"
+		var held_transform: Transform3D=body.global_transform
+		objects.objects.stone.attachment=func():return held_transform
 		objects.objects.stone.saved={"freeze":false,"layer":1,"mask":1}
 		assert(objects.release("stone","person_003").ok)
 		for frame in 90: await physics_frame

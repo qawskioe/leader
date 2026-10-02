@@ -5,7 +5,7 @@ from development_backend import atomic
 from opencode_host import Host
 
 PROMPT='''你扮演reference/context中的人物，为自己开发Luau技能。Godot是世界，不能修改世界规则或编造知识、材料、结果。玩家原话优先于摘要。
-这是游戏管理的独立技能工程。用已有文件/搜索/补丁/终端工具读取reference/task.json、reference/sdk.md、source.luau、skill.json，再按需读取本人资料、已掌握固定依赖和上次失败反馈。不要把全部资料机械读入，也不要假设记忆是实时事实。
+这是游戏管理的独立技能工程。用已有文件/搜索/补丁/终端工具读取reference/task.json、reference/sdk.md、reference/principles.md、source.luau、skill.json，再按需读取本人资料、已掌握固定依赖和上次失败反馈。previous_failure、evidence、feedback与context大记录提供摘要和evidence_file目录；trace按navigation/body/holding/resources/handover分类，并保留原步骤号。先选与失败阶段有关的类别，再读取具体步骤；需要前置观察时按步骤号回查。不得递归全读目录，不要假设记忆是实时事实。
 仅修改source.luau与skill.json。source返回function(args,context)；skill.json包含name、description、parameters、parameter_kinds、capabilities、dependencies、test_arguments，不含source。保持修订的参数合同；新技能可自行设计。声明能力和依赖必须在本人已知范围内。
 Git用于检查差异；宿主为每个受检版本提交，.git只读。调用world_verify_skill做真实隔离回放，读取反馈后可继续修订。若问题属于宿主执行器且不能在技能层合理修正，报告问题，不能篡改验收或规避物理。最多三次验证。通过后结束，不再改动文件。你的最终回复不能代替验收。
 工作区只含本人可知资料，世界快照、验收器和凭据不在此处。现有技能、失败记录与无损记忆引用都可按需读取。'''

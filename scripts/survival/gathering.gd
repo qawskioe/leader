@@ -55,10 +55,12 @@ func _ready() -> void:
 		shape.shape=cylinder
 		shape.position.y=0.25
 		body.add_child(shape)
-		sim.world_objects.register_object("basket/"+str(index),body,Vector3(0,0.55,0))
+		# 与build_outdoor.py左侧提手顶点一致；篮口中心不是可握持的实体。
+		sim.world_objects.register_object("basket/"+str(index),body,Vector3(-0.39,0.67,0))
 		baskets[str(index)]=sim.world_objects.objects["basket/"+str(index)]
 		baskets[str(index)].merge({"root":root,"spawn":root.global_transform,"reserved":"","kind":"basket","contents":preload("res://scripts/survival/container_contents.gd").new("food",CAPACITY)},true)
 		baskets[str(index)]["extra"]=_basket_properties.bind(str(index))
+		baskets[str(index)].merge({"player_frame":NodePath("."),"player_offset":Vector3(0.44,0.65,-0.75),"xr_kind":"basket"},true)
 		sim.content_interaction.register_container("basket/"+str(index),baskets[str(index)],Vector3(0,0.55,0),_layout.bind(str(index)))
 	for mesh in outdoor.find_children("HarvestFruit_*","MeshInstance3D",true,false):
 		var id:=str(mesh.name)
@@ -109,10 +111,8 @@ func _reachable(id: String, target: Vector3, distance: float=2.5) -> bool:
 	return sim.scene.get_world_3d().direct_space_state.intersect_ray(query).is_empty()
 
 func hold_pose(id: String) -> Transform3D:
-	var owner: Node3D=sim.scene.get_node("Player") if id=="player" else sim.actors[id].body
-	var pose: Transform3D=owner.global_transform*Transform3D(Basis.IDENTITY,Vector3(-0.44,0.65,-0.75) if id=="player" else Vector3(-0.52,0.6,0.35))
-	if id=="player" and owner.is_vr_active(): pose=owner.vr.hands.transform_for("basket",pose,owner.vr)
-	return pose
+	if id=="player":return sim.world_objects.player_hold_transform("basket/"+basket_for(id),sim.scene.get_node("Player"))
+	return sim.actors[id].body.global_transform*Transform3D(Basis.IDENTITY,Vector3(-0.52,0.6,0.35))
 
 func pickup(id: String, key: String) -> bool:
 	if sim.world_objects.held.has(id+"/Hand.L") or not baskets.has(key): return false
@@ -148,8 +148,16 @@ func reserve_fruit(id: String, excluded: Array=[]) -> String:
 	if closest!="": resources[closest].reserved=id
 	return closest
 
+func free_unit_hand(id: String) -> String:
+	# 散装物资仍限一份；玩家与NPC都按实际占用选择空手。
+	if hands.has(id):return ""
+	for hand in ["Hand.R","Hand.L"]:
+		if not sim.world_objects.held.has(id+"/"+hand):return hand
+	return ""
+
 func harvest(id: String, key: String, assistance: Dictionary={}) -> bool:
-	if is_instance_valid(sim.water) and sim.world_objects.held.has(id+"/Hand.R"): return false
+	var hand:=free_unit_hand(id)
+	if hand.is_empty():return false
 	if not resources.has(key) or hands.has(id): return false
 	var basket:=basket_for(id)
 	if basket.is_empty() or baskets[basket].contents.items.size()>=CAPACITY: return false
@@ -171,12 +179,13 @@ func harvest(id: String, key: String, assistance: Dictionary={}) -> bool:
 	for child in visual.get_children(): child.free()
 	sim.scene.add_child(visual)
 	visual.show()
-	hands[id]={"visual":visual,"origin":origin}
+	hands[id]={"visual":visual,"origin":origin,"hand":hand}
 	harvested+=1
 	return true
 
 func take_from_basket(id: String, key: String, index: int) -> bool:
-	if not baskets.has(key) or hands.has(id) or sim.world_objects.held.has(id+"/Hand.R"): return false
+	var hand:=free_unit_hand(id)
+	if not baskets.has(key) or hand.is_empty(): return false
 	var basket: Dictionary=baskets[key]
 	if basket.holder not in ["",id] or index<0 or index>=basket.contents.items.size(): return false
 	if not _reachable(id,basket.root.global_position+Vector3(0,0.3,0)): return false
@@ -185,7 +194,7 @@ func take_from_basket(id: String, key: String, index: int) -> bool:
 	assert(removed.ok)
 	var item: Dictionary=removed.item
 	item.visual.reparent(sim.scene,true)
-	hands[id]=item
+	item["hand"]=hand;hands[id]=item
 	_layout(key)
 	return true
 
@@ -235,13 +244,14 @@ func drop_food(id: String) -> bool:
 	return true
 
 func take_loose_food(id: String, key: String) -> bool:
-	if not loose_food.has(key) or hands.has(id) or sim.world_objects.held.has(id+"/Hand.R"): return false
+	var hand:=free_unit_hand(id)
+	if not loose_food.has(key) or hand.is_empty(): return false
 	if id!="player" and sim.actors[id].carried>0: return false
 	var item: Dictionary=loose_food[key]
 	if not _reachable(id,item.body.global_position): return false
 	item.visual.reparent(sim.scene,true)
 	item.body.collision_layer=0;item.body.collision_mask=0;item.body.queue_free()
-	hands[id]={"visual":item.visual,"origin":item.origin}
+	hands[id]={"visual":item.visual,"origin":item.origin,"hand":hand}
 	loose_food.erase(key)
 	return true
 
@@ -253,16 +263,24 @@ func _offered_visual(kind: String) -> Node3D:
 func offer_food(target: String) -> String:
 	return offer_item(target,"food")
 
+func offer_in_range(target: String) -> bool:
+	return _reachable("player",sim.actors[target].body.global_position+Vector3(0,1.1,0),2.0)
+
+func offer_availability(target: String, kind: String) -> Dictionary:
+	if not sim.actors.has(target):return {"ok":false,"message":"没有可递交的对象"}
+	var visual:=_offered_visual(kind)
+	if visual==null:return {"ok":false,"message":"手中没有要递交的物品"}
+	var at: Vector3=sim.actors[target].body.global_position+Vector3(0,1.1,0)
+	if not offer_in_range(target):return {"ok":false,"message":"再靠近一些，或移开递交路线上的阻挡"}
+	if not sim.perception.sees(target,visual.global_position):return {"ok":false,"message":"对方还没看见递来的物品，请先让对方看向你"}
+	for key in offers:
+		if offers[key].visual==visual.get_instance_id() and Time.get_ticks_msec()<offers[key].expires:return {"ok":false,"message":"已递出，正在等待对方决定"}
+	return {"ok":true}
+
 func offer_item(target: String, kind: String) -> String:
 	assert(kind in ["food","water"])
-	if not sim.actors.has(target): return ""
+	if not offer_availability(target,kind).ok:return ""
 	var visual:=_offered_visual(kind)
-	if visual==null:return ""
-	var at: Vector3=sim.actors[target].body.global_position+Vector3(0,1.1,0)
-	if visual.global_position.distance_to(at)>0.75 or not _reachable("player",at): return ""
-	if not sim.perception.sees(target,visual.global_position): return ""
-	for key in offers:
-		if offers[key].visual==visual.get_instance_id() and Time.get_ticks_msec()<offers[key].expires: return ""
 	var key:="offer_%d"%Time.get_ticks_usec()
 	var label: String="一份食物" if kind=="food" else "水袋（%d份水）"%sim.water.bags[sim.water.held("player")].contents.count
 	offers[key]={"target":target,"kind":kind,"visual":visual.get_instance_id(),"expires":Time.get_ticks_msec()+45000}
@@ -280,7 +298,7 @@ func resolve_offer(key: String, target: String, accept: bool) -> Dictionary:
 	if Time.get_ticks_msec()>offer.expires or visual==null or visual.get_instance_id()!=offer.visual: return result
 	if offer.kind=="water":
 		var at: Vector3=sim.actors[target].body.global_position+Vector3(0,1.1,0)
-		if visual.global_position.distance_to(at)>0.85 or not _reachable("player",at):return result
+		if not offer_in_range(target):return result
 		if sim.actors[target].stage!="idle":
 			result.message="对方仍在行动，水袋仍在玩家手中";result["category"]="busy";return result
 		var outcome: Dictionary=sim.water.give("player",target)
@@ -291,14 +309,15 @@ func resolve_offer(key: String, target: String, accept: bool) -> Dictionary:
 		return result
 	var actor: Dictionary=sim.actors[target]
 	var at: Vector3=actor.body.global_position+Vector3(0,1.1,0)
-	if hands.player.visual.global_position.distance_to(at)>0.85 or not _reachable("player",at): return result
-	if actor.stage!="idle" or actor.carried>0 or hands.has(target) or sim.world_objects.held.has(target+"/Hand.R"):
+	if not offer_in_range(target): return result
+	if actor.stage!="idle" or actor.carried>0 or free_unit_hand(target).is_empty():
 		result.message="对方双手占用，未转移食物"; return result
 	var item: Dictionary=hands.player
 	var origin: Dictionary=item.origin.duplicate(true)
 	origin.merge({"giver_id":"player","recipient_id":target,"helper_id":"player","requester_id":target,"request_id":key},true)
 	hands.erase("player")
 	item.origin=origin;item["material"]="food"
+	item["hand"]=free_unit_hand(target)
 	hands[target]=item
 	sim._sync(target)
 	result.success=true; result.message="玩家实际交给你一份食物，现在在你手中"; result.food_origin=origin
@@ -341,7 +360,7 @@ func _physics_process(delta: float) -> void:
 		var visual:=_offered_visual(offer.kind)
 		if visual==null or visual.get_instance_id()!=offer.visual:
 			_cancel_offer(key,"递物已取消：原来的物品已不在手中")
-		elif visual.global_position.distance_to(sim.actors[offer.target].body.global_position+Vector3(0,1.1,0))>0.85:
+		elif not offer_in_range(offer.target):
 			_cancel_offer(key,"递物已撤回：距离已拉开，物品仍在你手中")
 		elif Time.get_ticks_msec()>offer.expires:
 			_cancel_offer(key,"递物等待已超时：物品仍在你手中，可重新递出")
@@ -354,12 +373,13 @@ func _physics_process(delta: float) -> void:
 			regrown+=1
 	for id in hands:
 		if id=="player":
-			hands[id].visual.global_transform=sim.scene.get_node("Player/Eyes").global_transform*Transform3D(Basis.IDENTITY,Vector3(0.32,-0.24,-0.65))
+			var hand_x: float=-0.32 if hands[id].hand=="Hand.L" else 0.32
+			hands[id].visual.global_transform=sim.scene.get_node("Player/Eyes").global_transform*Transform3D(Basis.IDENTITY,Vector3(hand_x,-0.24,-0.65))
 			var player: Node3D=sim.scene.get_node("Player")
 			if player.is_vr_active(): hands[id].visual.global_transform=player.vr.hands.transform_for("fruit",hands[id].visual.global_transform,player.vr)
 		else:
-			var skeleton: Skeleton3D=sim.actors[id].skeleton
-			hands[id].visual.global_position=skeleton.to_global(skeleton.get_bone_global_pose(skeleton.find_bone("Hand.R")).origin)
+			var actor: Node3D=sim.actors[id].body
+			hands[id].visual.global_position=actor.to_global(Vector3(.42 if hands[id].get("hand","Hand.R")=="Hand.L" else -.42,.95,.60))
 	_player_input(delta)
 
 func aimed_target() -> String:
@@ -370,7 +390,7 @@ func aimed_target() -> String:
 		for id in sim.actors:
 			var at: Vector3=sim.actors[id].body.global_position+Vector3(0,1.1,0)
 			var offset:=at-camera.global_position
-			if hands.player.visual.global_position.distance_to(at)<=0.75 and (-camera.global_basis.z).dot(offset.normalized())>0.85 and _reachable("player",at) and sim.perception.sees(id,hands.player.visual.global_position):
+			if (-camera.global_basis.z).dot(offset.normalized())>0.85 and offer_availability(id,"food").ok:
 				if offset.length()<nearest:nearest=offset.length();target="offer/"+id
 		if target!="":return target
 	if not hands.has("player"):

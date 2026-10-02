@@ -44,6 +44,7 @@ func _io() -> void:
 	var sending_id:=""
 	var awaiting_ack:=false
 	while true:
+		var progressed:=false
 		lock.lock();var stop:=stopping;writes.append_array(outgoing);outgoing.clear();lock.unlock()
 		if stop: break
 		if not OS.is_process_running(process_id):
@@ -54,11 +55,12 @@ func _io() -> void:
 		if not sending.is_empty() and not awaiting_ack:
 			var stop_at:=mini(offset+384,sending.size())
 			stream.store_string(JSON.stringify({"op":"transport_chunk","sequence":chunk_sequence,"hex":sending.slice(offset,stop_at).hex_encode(),"last":stop_at==sending.size()})+"\n")
-			offset=stop_at;awaiting_ack=true
+			offset=stop_at;awaiting_ack=true;progressed=true
 		if sending.is_empty() and Time.get_ticks_msec()-last_poll>500:
 			stream.store_string('{"op":"poll"}\n');last_poll=Time.get_ticks_msec()
 		var available:=mini(stream.get_length(),1048576)
-		if available>0: buffer.append_array(stream.get_buffer(available))
+		if available>0:
+			buffer.append_array(stream.get_buffer(available));progressed=true
 		if errors.get_length()>0: errors.get_buffer(mini(errors.get_length(),65536)) # 不让stderr填满；不把原生输出当协议。
 		var end:=buffer.find(10)
 		while end>=0:
@@ -75,7 +77,8 @@ func _io() -> void:
 			buffer=buffer.slice(end+1);end=buffer.find(10)
 		if buffer.size()>1048576:
 			lock.lock();incoming.append({"type":"service_lost"});lock.unlock();break
-		OS.delay_msec(1)
+		# 有数据或确认到达就继续收发；只有空闲轮次让出线程，避免每个小块固定等待。
+		if not progressed: OS.delay_msec(1)
 
 func _process(_delta: float) -> void:
 	var started:=Time.get_ticks_usec()

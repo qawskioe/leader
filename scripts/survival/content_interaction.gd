@@ -1,7 +1,7 @@
 extends RefCounted
 ## 世界注册容器能力，所有内容物仍在原实体的同一个组件中。
 const Contents=preload("res://scripts/survival/container_contents.gd")
-const CONTACT_DISTANCE:=0.35
+
 var sim: Node
 var containers: Dictionary={}
 
@@ -22,8 +22,8 @@ func _access(person: String, id: String) -> Dictionary:
 	if not held_by_self:
 		if sim.perception.known(person,id).is_empty(): return {"ok":false,"code":"not_observed"}
 		if not sim.perception.sees(person,opening_position(id),record.body.get_rid()): return {"ok":false,"code":"not_visible"}
-	if not sim.gathering._reachable(person,opening_position(id)): return {"ok":false,"code":"out_of_reach"}
-	# 接触和可见性通过后才能获知容器当前状态。
+	if not preload("res://scripts/skills/interaction_range.gd").reachable(sim.actors[person].body,opening_position(id)): return {"ok":false,"code":"out_of_reach"}
+	# 距离和可见性通过后才能获知容器当前状态。
 	if record.holder not in ["",person]: return {"ok":false,"code":"held_by_other"}
 	return {"ok":true}
 
@@ -40,9 +40,6 @@ func transfer(person: String, source: String, target: String, quantity: int) -> 
 		if not accessible.ok: return accessible
 	if source==target: return {"ok":false,"code":"same_container"}
 	if containers[source].record.holder!=person: return {"ok":false,"code":"source_not_held"}
-	var distance:=opening_position(source).distance_to(opening_position(target))
-	if distance>CONTACT_DISTANCE:
-		return {"ok":false,"code":"openings_not_in_contact","distance_m":distance,"contact_limit_m":CONTACT_DISTANCE,"message":"需先用身体动作把持有容器的开口接近目标开口；未转移内容物。"}
 	var result: Dictionary=containers[source].record.contents.transfer_to(containers[target].record.contents,quantity)
 	if not result.ok: return result
 	for id in [source,target]:

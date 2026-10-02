@@ -5,11 +5,9 @@ return function(args,context)
         if seen.known[held.id] and seen.known[held.id].kind=="basket" then container=held.id break end
     end
     if not container then
-        local found=skills.call("find",{kind="basket"},context)
+        local found=skills.call("locate",{kind="basket"},context)
         if not found.ok then return found end
         container=found.object
-        local arrived=skills.call("go",{object=container,distance=1.0},context)
-        if not arrived.ok then return arrived end
         local picked=skills.call("hold",{object=container,hand="Hand.L"},context)
         if not picked.ok then return picked end
     end
@@ -43,10 +41,12 @@ return function(args,context)
                     if not touched_basket.ok then return touched_basket end
                     local loaded=world.request("put_unit",{target=container})
                     if not loaded.ok then return loaded end
-                    world.request("relax",{seconds=0.4})
                 end
             end
         end
     end
-    return skills.call("store",{container=container},context)
+    local stored=skills.call("store",{container=container},context)
+    if not stored.ok then return stored end
+    if stored.quantity==0 then return {ok=false,code="no_food_collected",quantity=0,target=stored.target} end
+    return stored
 end

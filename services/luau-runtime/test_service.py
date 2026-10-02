@@ -41,7 +41,7 @@ class ServiceTests(unittest.TestCase):
             operation=r['request']['operation'];operations.append(operation)
             response={'ok':True}
             if operation=='walk_options':
-                response={'observation_id':'frame','near':{'held_objects':[{'id':'bag','hand':'Hand.R'}]},'known':{'bag':{'position':{'x':0.33,'y':0.8,'z':0.24}}}}
+                response={'observation_id':'frame','near':{'landmarks':{},'held_objects':[{'id':'bag','hand':'Hand.R'}]},'known':{'bag':{'position':{'x':0.33,'y':0.8,'z':0.24}}}}
             r=self.client.send(op='resume',id='near',sequence=r['sequence'],result=response)
         self.assertEqual(r['type'],'completed',r)
         self.assertTrue(r['result']['ok'],r)

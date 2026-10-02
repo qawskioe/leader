@@ -9,17 +9,21 @@ class FakeGateway extends Node:
 		return {"ok":true,"text":JSON.stringify(replies.pop_front()),"model":"fixture","elapsed_ms":1,"usage":{}}
 func _initialize() -> void: run.call_deferred()
 func run() -> void:
-	var store=preload("res://scripts/voice/people_store.gd").new();assert(store.initialize().is_empty())
+	create_timer(15).timeout.connect(func():push_error("memory pipeline timeout");quit(1))
+	var store=preload("res://scripts/voice/people_store.gd").new();assert(store.initialize("res://data/people.json","user://memory_pipeline_%d.json"%Time.get_ticks_usec(),true).is_empty())
 	store.hear("person_003",{"id":"past","speaker":"player","text":"独特记忆：木块先前放在松树边。"})
+	store.hear("person_002",{"id":"secret","speaker":"body","text":"本人事件"})
 	store.remember("person_002","secret",{"private_interpretation":"他人的独特私密想法","public_reply":""})
 	store.memory.advance(store.memory.policy.day_seconds+1) # 日终整理后，旧经历进入长期检索。
 	var gateway:=FakeGateway.new();root.add_child(gateway)
-	gateway.replies=[{"recall":{"kind":"heard","keywords":["木块"],"limit":3}},{"task_handling":{"state":"none","reason":"回答历史位置问题"},"private_interpretation":"我回忆起之前听到的位置","public_reply":"之前说是在松树边。","speech_style":"平静","intent":"none","routing_reason":"依据本人回忆回答","speech_act":"reply","addressed_person":"player","recipient_id":"","capability_gap":null,"conversation":{"addressees":["person_003"],"participation":"reply","reason":"玩家问我"}}]
+	gateway.replies=[{"recall":{"kind":"heard","keywords":["木块"],"limit":3}},{"task_status":"none","task_handling":{"state":"none","scope":"independent","reason":"回答历史位置问题"},"private_interpretation":"我回忆起之前听到的位置","public_reply":"之前说是在松树边。","speech_style":"平静","intent":"none","routing_reason":"依据本人回忆回答","speech_act":"reply","addressed_person":"player","capability_gap":null,"conversation":{"addressees":["person_003"],"participation":"reply","reason":"玩家问我"}}]
 	var pipeline=preload("res://scripts/voice/decision_pipeline.gd").new();pipeline.store=store;pipeline.gateway=gateway;root.add_child(pipeline)
 	var reports: Array=[];pipeline.report_ready.connect(func(r): reports.append(r))
 	pipeline.run({"id":"now","speaker":"player","kind":"speech_intent","text":"大山，之前那个东西放在哪里？","listeners":["person_003"]},{})
 	await pipeline.completed
 	assert(gateway.prompts.size()==2)
+	for prompt in gateway.prompts:
+		assert(not prompt.contains("不知道别人的私下想法") and not prompt.contains("不要再输出ready") and not prompt.contains("修订后只有原话要求演示"),"实际网关请求也应使用新提示")
 	assert(not gateway.prompts[0].contains("独特记忆") and not gateway.prompts[0].contains("他人的独特私密想法"),"默认输入不注入历史或他人隐私")
 	assert(gateway.prompts[1].contains("独特记忆") and not gateway.prompts[1].contains("他人的独特私密想法"))
 	assert(reports.size()==1 and not reports[0].has("error") and reports[0].memory_reads.size()==1)

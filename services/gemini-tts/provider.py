@@ -9,7 +9,9 @@ import time
 import urllib.error
 import urllib.request
 
-from probe import MODEL, NoRedirect, events
+from probe import NoRedirect, events
+
+MODEL = "gemini-3.8-flash-tts"
 
 ROOT = Path(__file__).resolve().parent
 MAX_AUDIO_BYTES = 24_000 * 2 * 30
@@ -21,7 +23,7 @@ class QuotaError(RuntimeError):
         self.retry_after_seconds = seconds
         self.code = 'quota_exceeded'
         limit_text = f'（上游报告限额 {limit}，未说明统计周期）' if limit else ''
-        super().__init__(f'Gemini TTS 免费请求配额超限{limit_text}；至少等待 {seconds} 秒后再试。冷却期间不发送语音请求，恢复时间仍以上游为准。')
+        super().__init__(f'Gemini TTS 请求配额超限{limit_text}；至少等待 {seconds} 秒后再试。冷却期间不发送语音请求，恢复时间仍以上游为准。')
 
 
 def quota_details(raw, retry_after=None):
@@ -54,8 +56,8 @@ def validate_request(value):
         raise ValueError('公开台词需要为 1 至 200 字')
     if not isinstance(value['style'], str) or not 1 <= len(value['style'].strip()) <= 300:
         raise ValueError('公开语气需要为 1 至 300 字的表达描述')
-    if value['voice'] != 'Kore':
-        raise ValueError('当前音色为 Kore')
+    if not isinstance(value['voice'], str) or value['voice'] not in {'Kore', 'Puck', 'Aoede', 'Charon'}:
+        raise ValueError('音色必须为已配置的 Kore、Puck、Aoede 或 Charon')
     return value
 
 
@@ -93,6 +95,30 @@ def packets(source):
     raise ValueError('音频流中断：缺少明确完成标记')
 
 
+def load_config():
+    if not (ROOT / 'runtime/api-key.txt').read_text(encoding='utf-8').strip():
+        raise ValueError('未配置官方 Gemini API Key')
+    return {'configured': True}
+
+
+def prepare():
+    load_config()
+
+
+def build_request(value):
+    validate_request(value)
+    return {
+        'model': MODEL,
+        'input': [{'type': 'user_input', 'content': [{
+            'type': 'text', 'text': value['text'],
+            'annotations': [{'type': 'speech_metadata', 'style': value['style']}],
+        }]}],
+        'response_format': {'type': 'audio', 'mime_type': 'audio/l16', 'sample_rate': 24000},
+        'generation_config': {'speech_config': [{'voice': value['voice']}]},
+        'stream': True, 'store': False,
+    }
+
+
 def synthesize(value):
     global _retry_at
     validate_request(value)
@@ -102,11 +128,7 @@ def synthesize(value):
     key = (ROOT / 'runtime/api-key.txt').read_text(encoding='utf-8').strip()
     if not key:
         raise ValueError('未配置 Gemini API Key')
-    prompt = ('请执行中文语音合成，仅朗读下方 Transcript 的原文。表达要求只用于调整声音，不得读出要求、标题或增加台词。\n'
-              'Director notes: ' + value['style'] + '\nTranscript:\n' + value['text'])
-    body = {'model': MODEL, 'input': prompt, 'response_format': {'type': 'audio'},
-            'generation_config': {'speech_config': [{'voice': value['voice']}]},
-            'stream': True, 'store': False}
+    body = build_request(value)
     request = urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/interactions',
                                     data=json.dumps(body).encode('utf-8'),
                                     headers={'x-goog-api-key': key, 'Content-Type': 'application/json',
@@ -120,6 +142,8 @@ def synthesize(value):
                 packet['elapsed_ms'] = round((time.monotonic() - started) * 1000)
                 yield packet
     except urllib.error.HTTPError as error:
+        if error.code == 402:
+            raise RuntimeError('Gemini API 预付款余额不足；请检查 AI Studio 结算状态') from None
         if error.code == 429:
             detail = quota_details(error.read(24000),error.headers.get('Retry-After'))
             _retry_at = time.monotonic()+detail['retry_after_seconds']

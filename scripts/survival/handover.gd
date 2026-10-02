@@ -22,6 +22,14 @@ func cancel_giver(giver: String) -> void:
 	for offer in pending.values():
 		if offer.giver==giver and offer.answer.is_empty(): offer.answer={"ok":false,"code":"cancelled","message":"递交已取消，物品保留"}
 
+func _receiving_hand(object: String, recipient: String) -> String:
+	# NPC散装物资与实体物品均可用空闲手；散装物资仍限一份。
+	if units.has(object):return sim.gathering.free_unit_hand(recipient)
+	var hands: Array=["Hand.R"] if recipient=="player" else ["Hand.R","Hand.L"]
+	for hand in hands:
+		if sim.water.free_hand(recipient,hand):return hand
+	return ""
+
 func _check(giver: String, object: String, recipient: String) -> Dictionary:
 	if not _held(giver,object):return {"ok":false,"code":"not_held","message":"物品不在本人手中，未发生交付"}
 	if recipient==giver or (recipient!="player" and not sim.actors.has(recipient)):
@@ -30,9 +38,10 @@ func _check(giver: String, object: String, recipient: String) -> Dictionary:
 	var target: Node3D=sim.water.owner(recipient)
 	if not sim.gathering._reachable(giver,target.global_position+Vector3.UP,2.0):
 		return {"ok":false,"code":"out_of_reach","message":"尚未到可交接的距离，物品仍在本人手中；需要先靠近接收者"}
-	if not sim.water.free_hand(recipient):return {"ok":false,"code":"recipient_occupied","message":"接收者手中已有物品，需腾出手；未发生交付"}
+	var receiving_hand:=_receiving_hand(object,recipient)
+	if receiving_hand.is_empty():return {"ok":false,"code":"recipient_occupied","message":"接收者没有可用的接物手，需先腾出手；未发生交付"}
 	if recipient!="player" and sim.actors[recipient].stage!="idle":return {"ok":false,"code":"recipient_busy","message":"对方仍在执行动作，尚未交付"}
-	return {"ok":true}
+	return {"ok":true,"hand":receiving_hand}
 
 func give(giver: String, object: String, recipient: String) -> Dictionary:
 	var checked:=_check(giver,object,recipient)
@@ -70,19 +79,16 @@ func respond(key: String, recipient: String, accept: bool) -> Dictionary:
 	else:offer.answer=_transfer(offer.giver,offer.object,recipient)
 	return offer.answer
 
-func _pose(object: String, recipient: String) -> Transform3D:
-	if recipient=="player":return sim.water.hold_pose(recipient)
-	var skeleton: Skeleton3D=sim.actors[recipient].skeleton
-	var hand: Transform3D=skeleton.global_transform*skeleton.get_bone_global_pose(skeleton.find_bone("Hand.R"))
-	hand.origin-=hand.basis*sim.world_objects.objects[object].grip
-	return hand
+func _pose(object: String, recipient: String, hand_name: String) -> Transform3D:
+	if recipient=="player":return sim.world_objects.player_hold_transform(object,sim.scene.get_node("Player"))
+	return sim.world_objects.carry_transform(object,sim.actors[recipient].body,hand_name)
 
 func _transfer(giver: String, object: String, recipient: String) -> Dictionary:
 	var checked:=_check(giver,object,recipient)
 	if not checked.ok:return checked
 	if units.has(object):
 		var item: Dictionary=units[object]
-		sim.gathering.hands.erase(giver);sim.gathering.hands[recipient]=item
+		sim.gathering.hands.erase(giver);item["hand"]=checked.hand;sim.gathering.hands[recipient]=item
 		item.origin["giver_id"]=giver;item.origin["recipient_id"]=recipient
 		var assistance: Dictionary=sim.actors[giver].assistance if sim.actors.has(giver) else {}
 		if assistance.get("requester_id")==recipient: item.origin.merge(assistance,true)
@@ -91,7 +97,7 @@ func _transfer(giver: String, object: String, recipient: String) -> Dictionary:
 		var material: String=item.get("material","food")
 		sim.life_world.fact.emit({"kind":"given","person_id":giver,"recipient_id":recipient,"material":material,"quantity":1,"origin":item.origin.duplicate(true),"source_event_id":sim.actors[giver].event_id if sim.actors.has(giver) else ""})
 		return {"ok":true,"code":"transferred_unit","recipient_id":recipient,"material":material,"message":"同一份物资已交到接收者手中，尚未被食用"}
-	var result: Dictionary=sim.world_objects.transfer_attachment(object,giver,recipient,"Hand.R",_pose.bind(object,recipient))
+	var result: Dictionary=sim.world_objects.transfer_attachment(object,giver,recipient,checked.hand,_pose.bind(object,recipient,checked.hand))
 	assert(result.ok,"校验后同步交接不应失败")
 	result["message"]="同一物品已实际交到接收者手中；未取水、填充或复制物品"
 	result["recipient_id"]=recipient

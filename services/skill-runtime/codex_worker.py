@@ -2,7 +2,7 @@
 import json,sys,time,subprocess,threading,queue
 from pathlib import Path
 from development_backend import atomic
-from codex_process import command,environment,stop
+from codex_process import command,environment,stop,prepare_workspace
 from opencode_host import Host
 import opencode_worker as ipc
 
@@ -25,6 +25,7 @@ def execute(folder):
     process=None
     log=(folder/'codex_stderr.log').open('w',encoding='utf-8')
     try:
+        prepare_workspace(folder/'workspace')
         args=command(selection['executable'],folder/'workspace',request['model'],request['budget_seconds'],extra)
         process=subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True,encoding='utf-8',env=environment(),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         process.stdin.write(ipc.PROMPT+'\n验证工具由world MCP提供。不要读取本技能工程之外的用户文件或凭据。\n');process.stdin.close()

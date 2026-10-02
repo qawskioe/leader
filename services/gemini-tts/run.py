@@ -5,7 +5,7 @@ from pathlib import Path
 import secrets
 import threading
 
-from cloud_provider import MODEL, synthesize, validate_request, load_config, prepare
+from provider import MODEL, synthesize, validate_request, load_config, prepare
 
 ROOT = Path(__file__).resolve().parent
 gate = threading.Lock()
@@ -39,10 +39,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             config = load_config()
-            state = {'configured':True,'project_id':config['project_id'],'stop_at_utc':config['stop_at_utc']}
+            state = {'configured':True}
         except (ValueError,OSError) as error:
             state = {'configured':False,'configuration_error':str(error)}
-        self.reply(200, {'service': 'leader-gemini-tts', 'provider':'Google Cloud Text-to-Speech',
+        self.reply(200, {'service': 'leader-gemini-tts', 'provider':'Google Gemini API',
                          'model': MODEL, 'busy': gate.locked(), **state})
 
     def do_POST(self):
@@ -95,5 +95,5 @@ if __name__ == '__main__':
         prepare()
     except Exception:
         # 保持本机接口可访问；具体配置／认证错误由请求路径返回。
-        print('Cloud TTS startup preparation failed; configuration or login needs attention',flush=True)
+        print('Gemini API TTS configuration needs attention',flush=True)
     ThreadingHTTPServer(('127.0.0.1', 18092), Handler).serve_forever()

@@ -14,8 +14,8 @@ def write_report(folder):
     request_file=folder/'build_request.json'
     revision=json.loads(request_file.read_text(encoding='utf-8')).get('revision',{}) if request_file.exists() else {}
     summary=('修订未通过，新版本未加载；旧版本保留' if revision else '首次学习未通过，尚未掌握此技能') if status.get('state')=='failed' else status.get('message','审查记录')
-    parts=['<!doctype html><meta charset="utf-8"><title>人物动作审查</title><style>body{background:#171b20;color:#eee;font:18px/1.6 sans-serif;max-width:1100px;margin:32px auto;padding:0 24px}section{background:#242a31;padding:20px;margin:16px 0;border-radius:12px}figure{display:inline-block;width:46%;vertical-align:top;margin:1%}img{width:100%}pre{white-space:pre-wrap;font-size:14px}a{color:#8ecaff}small{color:#bac2cb}</style>',
-           '<h1>人物动作审查</h1><p>任务：'+esc(folder.name)+'</p>',
+    parts=['<!doctype html><meta charset="utf-8"><title>人物技能验收</title><style>body{background:#171b20;color:#eee;font:18px/1.6 sans-serif;max-width:1100px;margin:32px auto;padding:0 24px}section{background:#242a31;padding:20px;margin:16px 0;border-radius:12px}figure{display:inline-block;width:46%;vertical-align:top;margin:1%}img{width:100%}pre{white-space:pre-wrap;font-size:14px}a{color:#8ecaff}small{color:#bac2cb}</style>',
+           '<h1>人物技能验收</h1><p>任务：'+esc(folder.name)+'</p>',
            '<section><b>'+esc(summary)+'</b><p>以下区分宿主数值检查和模型意见；模型的故障归因不等于已确认的程序根因。</p>']
     for issue in review.get('issues',[]):
         if isinstance(issue,dict) and 'problem' in issue:
@@ -35,10 +35,13 @@ def write_report(folder):
         for check in outcomes['checks']:
             parts.append('<p>'+('通过' if check['passed'] else '未通过')+'：'+esc(check['description'])+'；测量值 '+esc(check['measured'])+'</p>')
         if not outcomes['checks']:parts.append('<p>没有可数值判定的条件；仍需独立模型验收。</p>')
-    parts.append('</section><h2>回放关键帧</h2><p>点击图片打开原图。灰地面和蓝色圆片是验证场景的接触参考。</p>')
+    parts.append('</section><h2>隔离回放证据</h2><p>普通技能依据世界事实与语义验收，不要求动作关键帧。</p>')
     for motion in sorted(folder.glob('motion_*/motion.json')):
         data=json.loads(motion.read_text(encoding='utf-8'))
         parts.append('<h3>'+esc(motion.parent.name)+'</h3>')
+        if review.get('review_mode')=='world_semantics' or not data.get('frames'):
+            parts.append('<p>世界事实回放，无图像要求。</p><details><summary>查看执行前后事实与操作结果</summary><pre>'+esc(json.dumps(data.get('result',{}),ensure_ascii=False,indent=2))+'</pre></details>')
+            continue
         selected=motion.parent/'review_frames.json'
         frames=json.loads(selected.read_text(encoding='utf-8')) if selected.exists() else data.get('frames',[])
         parts.append('<p>'+('实际提交给审查模型的关键帧' if selected.exists() else '回放预览；本轮尚无审查选帧记录')+'</p>')

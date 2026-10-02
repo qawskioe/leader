@@ -1,18 +1,20 @@
 """修订证据只来自本人上下文及与旧技能源码匹配的验证任务。"""
 import json
 from pathlib import Path
+from motion_review import repair_evidence
 
 
 def collect(revision, context, jobs_root):
     ref=revision['ref']
     packet={
-        'player_instruction':revision.get('player_event',{}),
+        'trigger_event':revision.get('player_event',{}),
+        'trigger_meaning':'依据事件speaker/kind区分玩家教导与本人执行反馈；world/body事件不是玩家指令。',
         'daily_model_interpretation':revision.get('feedback',''),
-        'interpretation_authority':'辅助理解，不是玩家原话；有冲突时依据玩家原话和实际证据独立判断。',
+        'interpretation_authority':'日常模型提出的方法问题，不是强制修法；依据原事件、本人目标与实际执行证据独立判断。',
         'heard_context':context.get('heard_events',[])[-8:],
         'execution_results':[r for r in context.get('execution_results',[]) if r.get('skill_ref')==ref][-4:],
-        'body_control':context.get('body_control',{}),
-        'visual_evidence':{'available':False,'reason':'未找到与旧技能源码匹配的验证画面；不能假装已看过。'},
+        'interaction_rules':context.get('interaction_rules',{}),
+        'visual_evidence':{'available':False,'reason':'没有历史画面；简化技能不要求图像，按世界事实和执行证据验证。'},
     }
     expected=json.loads(revision['definition']['program_json'])['source_sha256']
     matches=[]
@@ -42,7 +44,7 @@ def collect(revision, context, jobs_root):
                 p=path.parent/name
                 if p.exists(): reviews[name]=json.loads(p.read_text(encoding='utf-8'))
             packet['visual_evidence']={'available':True,'job':path.parent.parent.name,'capture':path.parent.name,
-                'source_sha256':expected,'frames':selected,'reviews':reviews,'runtime_result':data.get('result'),
+                'source_sha256':expected,'frames':selected,'reviews':reviews,'runtime_result':repair_evidence(data.get('result',{})),
                 'faults':data.get('faults',[]),'note':data.get('note',''),
                 'provenance':'独立验证场景的历史关键帧，不是当前游戏实时视野；审查结论可能有误，需要结合图像判断。'}
             return packet,images

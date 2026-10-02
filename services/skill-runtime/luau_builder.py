@@ -18,8 +18,14 @@ sys.path.insert(0,str(ROOT/'services'))
 from godot_path import resolve_godot
 
 def write(folder,value):
-    temporary=folder/'status.tmp';temporary.write_text(json.dumps(value,ensure_ascii=False),encoding='utf-8');temporary.replace(folder/'status.json')
+    from development_backend import atomic
+    atomic(folder/'status.json',value)
     write_report(folder)
+
+def failure_message(error, verdict):
+    if not verdict.get('failure_kind'):return error
+    notes=[item for item in verdict.get('issues',[]) if isinstance(item,str)]
+    return error+'；最后一次回放的归因建议：'+'；'.join(notes[:2])[:600]
 
 def candidate(output, request):
     keys={'name','description','source','parameters','parameter_kinds','capabilities','dependencies','test_arguments'}
@@ -57,7 +63,7 @@ def execute(folder,request):
     deadline=time.monotonic()+POLICY['budget_seconds']
     revision=request.get('revision',{});old=revision.get('definition',{})
     config=model_config(ROOT,selection)
-    evidence,_images=collect(revision,request['character_context'],folder.parent) if revision else ({'player_instruction':request['creation']['player_event'],'requested_goal':request['creation']['goal']},[])
+    evidence,_images=collect(revision,request['character_context'],folder.parent) if revision else ({'trigger_event':request['creation']['player_event'],'requested_goal':request['creation']['goal']},[])
     (folder/'revision_evidence.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
     cancelled=lambda:(folder/'cancelled').exists()
     if cancelled():return 1
@@ -66,7 +72,7 @@ def execute(folder,request):
     except (ValueError,KeyError,TypeError) as error:
         write(folder,{'state':'failed','message':'未能确定验收条件：'+str(error)});return 1
     if cancelled() or time.monotonic()>=deadline:return 1
-    draft=failed_draft(folder,request) if not revision else {}
+    draft=failed_draft(folder,request)
     (folder/'previous_failed_draft.json').write_text(json.dumps(draft,ensure_ascii=False),encoding='utf-8')
     if old:
         program=json.loads(old['program_json'])
@@ -75,6 +81,9 @@ def execute(folder,request):
     else:
         baseline=draft.get('candidate_output',{'name':'','description':'','parameters':{},'parameter_kinds':{},'capabilities':[],'dependencies':{},'test_arguments':{},'source':''}).copy()
     (folder/'previous_source.luau').write_text(baseline.get('source',''),encoding='utf-8')
+    # 保留已掌握版本作为独立审查基准；只让编写工作区从同版本失败草稿继续。
+    if old and draft.get('candidate_output'):
+        baseline=draft['candidate_output'].copy()
     workspace=Workspace(folder,request,baseline,(ROOT/'services/skill-runtime/luau_sdk.md').read_text(encoding='utf-8'),evidence,draft)
     # 已有视觉证据以只读工程文件交接，不让执行器依赖上个后端的私有路径。
     if _images:
@@ -105,13 +114,13 @@ def execute(folder,request):
         verdict=review(folder,config,ROOT,ENGINE,attempt,deadline=deadline,goal=json.dumps({'original':revision.get('player_event',request.get('creation',{}).get('player_event',{})),'goal':request.get('creation',{}).get('goal',revision.get('feedback',''))},ensure_ascii=False))
         if cancelled() or time.monotonic()>=deadline:verdict={'passed':False,'owner':'executor','issues':['已取消或超过整轮时限，未批准']}
         last_verdict=verdict
-        workspace.export('feedback/review_%d.json'%attempt,verdict)
+        workspace.export('feedback/review_%d.json'%attempt,workspace.evidence_index.pack(verdict,'review'))
         if verdict['passed'] and workspace.digest()==digest:
             workspace.approved={'digest':digest,'definition':definition,'commit':commit,'review':verdict}
-        return {'ok':verdict['passed'],'passed':verdict['passed'],'commit':commit,'feedback_file':'feedback/review_%d.json'%attempt,'owner':verdict.get('owner'),'remaining_tests':POLICY['attempts']-attempt}
+        return {'ok':verdict['passed'],'passed':verdict['passed'],'commit':commit,'feedback_file':'feedback/review_%d.json'%attempt,'owner':verdict.get('owner'),'retryable':verdict.get('retryable',False),'failure_kind':verdict.get('failure_kind',''),'remaining_tests':POLICY['attempts']-attempt}
     result=run(workspace,config,deadline,verify,lambda value:write(folder,value),cancelled,folder,selection)
     if not result['ok']:
-        write(folder,{'state':'failed','message':result['error'],'review':last_verdict});return 1
+        write(folder,{'state':'failed','message':failure_message(result['error'],last_verdict),'review':last_verdict});return 1
     if cancelled() or time.monotonic()>=deadline or workspace.digest()!=result['digest']:
         write(folder,{'state':'failed','message':'发布前版本变化、取消或超时，未加载'});return 1
     raw=json.dumps(result['definition'],ensure_ascii=False,separators=(',',':'))
@@ -153,5 +162,7 @@ if __name__=='__main__':
         request=json.loads((folder/'build_request.json').read_text(encoding='utf-8'))
         raise SystemExit(verify_existing(folder) if '--verify-existing' in sys.argv else execute(folder,request))
     except Exception as error:
+        import traceback
+        (folder/'host_error.json').write_text(json.dumps({'type':type(error).__name__,'errno':getattr(error,'errno',None),'winerror':getattr(error,'winerror',None),'filename':getattr(error,'filename',None),'traceback':traceback.format_exc()},ensure_ascii=False),encoding='utf-8')
         write(folder,{'state':'failed','message':'Luau修订失败：'+type(error).__name__})
         raise SystemExit(1)

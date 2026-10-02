@@ -47,5 +47,11 @@ func run() -> void:
 	for entry in voice.skills.library.describe("person_003"):
 		if entry.ref==registered.ref: present=true
 	assert(present,"初始化内置技能不能覆盖个人修订")
-	print("LUAU_REGISTERED_PASSED original_rejected_decision_replay, real_controller_call, two_builtins, authoritative_results, per_person_revision")
+	var frame: Dictionary=voice.survival.space.capture("person_003")
+	var distant:={"observation_id":frame.id,"position":{"x":-50.0,"y":0.0,"z":-10.0}}
+	assert(voice.skills.invoke("person_003","far_look",{"ref":refs.look_toward,"arguments":{"target":distant}}).ok,"通用执行入口允许远处参照物，操作自身决定距离限制")
+	var turned: Dictionary=await voice.skills.finished
+	assert(turned.success,JSON.stringify(turned))
+	assert(not voice.survival.space.resolve("person_003",distant).ok,"近距解析不会被通用入口放宽")
+	print("LUAU_REGISTERED_PASSED original_rejected_decision_replay, real_controller_call, two_builtins, authoritative_results, per_person_revision, far_look_near_boundary")
 	scene.queue_free();await create_timer(0.2).timeout;quit()

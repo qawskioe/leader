@@ -1,10 +1,56 @@
-import tempfile,unittest,json
+import tempfile,unittest,json,subprocess
 from pathlib import Path
-from development_backend import read_selection,model_config
-from codex_process import command,environment
+from development_backend import read_selection,model_config,resolve_codex_directory,CODEX_WINDOWS_COMPANIONS
+from codex_process import command,environment,prepare_workspace
 from unittest.mock import patch
 
 class CodexTests(unittest.TestCase):
+    def test_desktop_directory_survives_versioned_install_replacement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);directory=root/'bin';directory.mkdir()
+            old=directory/'old';old.mkdir();(old/'codex.exe').touch()
+            new=directory/'new';new.mkdir();(new/'codex.exe').touch()
+            prerelease=directory/'preview';prerelease.mkdir();(prerelease/'codex.exe').touch()
+            for folder in [old,new,prerelease]:
+                for name in CODEX_WINDOWS_COMPANIONS:(folder/name).touch()
+            incomplete=directory/'incomplete';incomplete.mkdir();(incomplete/'codex.exe').touch()
+            versions={'old':'0.158.0','new':'0.159.2','preview':'0.159.2-alpha.12'}
+            def version(command,**kwargs):
+                self.assertEqual(command[1:],['--version'])
+                self.assertNotEqual(Path(command[0]).parent,incomplete,'仅含CLI的不完整安装不可用于开发工具')
+                return subprocess.CompletedProcess(command,0,stdout='codex-cli '+versions[Path(command[0]).parent.name]+'\n')
+            config=root/'services/skill-runtime/runtime/development_backend.json';config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({'backend':'codex','runtime':'local','executable':str(directory)}))
+            with patch('development_backend.subprocess.run',side_effect=version):
+                self.assertEqual(read_selection(root)['executable'],str(new/'codex.exe'))
+                (old/'codex.exe').unlink()
+                self.assertEqual(read_selection(root)['executable'],str(new/'codex.exe'))
+            self.assertEqual(json.loads(config.read_text())['executable'],str(directory),'持久配置保留稳定目录')
+
+    def test_directory_does_not_accept_unknown_binary_or_mask_missing_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp);(directory/'codex.exe').touch()
+            for name in CODEX_WINDOWS_COMPANIONS:(directory/name).touch()
+            with patch('development_backend.subprocess.run',return_value=subprocess.CompletedProcess([],0,stdout='something else')):
+                with self.assertRaisesRegex(ValueError,'没有工具组件完整'):resolve_codex_directory(directory)
+
+    def test_workspace_acl_is_scoped_to_current_host_and_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target=Path(tmp)
+            replies=[subprocess.CompletedProcess([],0,stdout='"host","S-1-5-21-123-1001"'),
+                     subprocess.CompletedProcess([],0)]
+            with patch('codex_process.os.name','nt'),patch('codex_process.subprocess.CREATE_NO_WINDOW',0,create=True),patch('codex_process.subprocess.run',side_effect=replies) as run:
+                prepare_workspace(target)
+                self.assertEqual(run.call_args_list[1].args[0],
+                                 ['icacls.exe',str(target.resolve()),'/grant','*S-1-5-21-123-1001:(OI)(CI)M'])
+
+    def test_invalid_identity_cannot_grant_acl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target=Path(tmp)
+            with patch('codex_process.os.name','nt'),patch('codex_process.subprocess.CREATE_NO_WINDOW',0,create=True),patch('codex_process.subprocess.run',return_value=subprocess.CompletedProcess([],0,stdout='"host","not-a-sid"')) as run:
+                with self.assertRaises(ValueError):prepare_workspace(target)
+                self.assertEqual(run.call_count,1)
+
     def test_native_windows_keeps_native_paths_and_restricted_permissions(self):
         exe='C:/App/Codex/codex.exe'
         args=command(exe,'D:/Leader/job/workspace','gpt-6-astra',60)

@@ -9,7 +9,6 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'text-gateway'))
 import world_outcomes as outcomes
 import motion_review
-from review_frames import select_frames
 from review_report import write_report
 
 
@@ -94,15 +93,6 @@ class OutcomeTests(unittest.TestCase):
         self.assertEqual(packet['runtime']['trace'][1],source['runtime']['trace'][1])
         self.assertIn('old',source['runtime']['trace'][0]['result'])
 
-    def test_motion_selection_keeps_brief_core_actions_among_long_waits(self):
-        frames=[{'file':str(i),'time_ms':i*200,'stage':'perceive / ok'} for i in range(200)]
-        for i,stage in [(60,'grasp / ok'),(70,'reach_point / ok'),(75,'reach_point / ok'),(78,'release / ok')]:frames[i]['stage']=stage
-        selected=select_frames(frames)
-        ids={f['file'] for f in selected}
-        self.assertEqual(len(selected),16)
-        self.assertTrue({'0','199','60','70','75','78','81','84'}<=ids)
-        self.assertEqual(selected,sorted(selected,key=lambda f:f['time_ms']))
-
     def test_repair_feedback_does_not_reveal_host_global_snapshot(self):
         source={'before':{'secret_object_position':[30,1,20]},'after':{'other_person_needs':50},
                 'runtime':{'trace':[{'operation':'grasp','result':{'ok':False,'code':'not_in_contact'}}]},'failures':['执行失败']}
@@ -148,10 +138,10 @@ class OutcomeTests(unittest.TestCase):
             (folder/'build_request.json').write_text('{}')
             (folder/'outcome_plan.json').write_text(json.dumps(self.plan))
             (folder/'source.luau').write_text('return function() return {ok=true} end')
-            data={'passed':True,'faults':[],'frames':[{'file':'frame.jpg','time_ms':1,'stage':'释放'}],'all_frames':[{'file':'frame.jpg','time_ms':1,'stage':'释放'}],'samples':[],'note':'fixture',
+            data={'passed':True,'faults':[],'frames':[{'file':'frame.jpg','time_ms':1,'stage':'释放'}],'all_frames':[],'samples':[],'note':'fixture',
                   'result':{'before':self.before,'after':after,'runtime':{'returned':{'ok':True}}}}
             (output/'motion.json').write_text(json.dumps(data))
-            decision={'passed':visual_pass,'visibility_ok':True,'owner':'skill','issues':[] if visual_pass else ['动作不符合要求']}
+            decision={'passed':visual_pass,'owner':'skill','issues':[] if visual_pass else ['动作不符合要求']}
             responses=[{'ok':True,'text':json.dumps(decision)}]
             if transient:responses.insert(0,{'ok':False,'retryable':True,'error':'HTTP 503'})
             if hard_error:responses=[{'ok':False,'error':'HTTP 403'}]
@@ -168,7 +158,10 @@ class OutcomeTests(unittest.TestCase):
             self.assertTrue((output/'outcomes.json').exists())
             (folder/'status.json').write_text(json.dumps({'state':'ready' if passed else 'failed','review':result}))
             page=write_report(folder).read_text(encoding='utf-8')
-            self.assertIn('实际提交给审查模型的关键帧' if visual_called else '回放预览',page)
+            self.assertIn('隔离回放证据',page)
+            if visual_called:
+                self.assertEqual(model.call_args.kwargs['images'],[])
+                if not hard_error:self.assertEqual(result['review_mode'],'world_semantics')
 
     def test_planner_only_receives_request_and_host_state(self):
         request={'verification_snapshot':{'person_id':'actor','people':{'actor':{'needs':self.before['needs'],'position':self.before['position']}},'objects':self.before['objects']},

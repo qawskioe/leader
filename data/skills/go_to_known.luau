@@ -5,7 +5,7 @@ return function(args, context)
     world.request("recall_locations",{kind="route"})
     for step=1,48 do
         local seen=world.request("walk_options",{})
-        local entry=seen.known[args.object]
+        local entry=seen.near.landmarks[args.object] or seen.known[args.object]
         if not entry then return {ok=false,code="location_not_in_working_memory"} end
         local p=entry.position or entry.approx_position
         if not p then return {ok=false,code="unknown_location"} end
@@ -44,7 +44,9 @@ return function(args, context)
                 end
                 return {ok=true,code="at_remembered_location",object=args.object,message="已接近最后所知位置；外部目标已转向，物品当前状态与接触方式仍需观察确认"}
             end
-        elseif distance>0.05 and (p.z<0 or math.abs(p.x)>math.max(0.05,p.z)*0.4) then
+        -- 粗略记忆会随转身重新量化。视野内允许侧向目标，先选地面前进再观察，
+        -- 不把粗略方位当成必须逐步对齐的精确朝向（±45°会来回跳变）。
+        elseif distance>0.05 and (p.z<=0 or math.abs(p.x)>p.z*math.sqrt(3)) then
             local scale=math.min(1,5/math.max(distance,0.01))
             local turned=world.request("look_toward",{target={observation_id=seen.observation_id,position={x=p.x*scale,y=0,z=p.z*scale}}})
             if not turned.ok then return turned end

@@ -7,6 +7,7 @@ const ConversationLog=preload("res://scripts/voice/conversation_log.gd")
 var grouped: Tree
 var output: TextEdit
 var status: Label
+var session_status: Label
 var device: OptionButton
 var recipient: OptionButton
 var local_only: CheckBox
@@ -62,7 +63,7 @@ func _ready() -> void:
 	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	settings_scroll.add_child(settings)
 	var help := Label.new()
-	help.text = "文字模型分别生成各听众的私下理解、公开答复和行动意图。\n默认 CapsWriter 本机识别；公开答复交给 Cloud TTS：Gemini 3.1 Flash / Kore 边生成边播放。\n当前支持附近探索、拿篮采集、取到手中、直接交付、存放、进食与休息。动作与数值由程序执行；持久记忆与遗忘尚未实现。"
+	help.text = "文字模型分别生成各听众的私下理解、公开答复和行动意图。\n默认 CapsWriter 本机识别；公开答复交给 Gemini API：Gemini 3.8 Flash TTS / 人物独立音色 边生成边播放。\n当前支持附近探索、拿篮采集、取到手中、直接交付、存放、进食与休息。动作与数值由程序执行；持久记忆与遗忘尚未实现。"
 	settings.add_child(help)
 	var gather_help:=Label.new()
 	gather_help.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
@@ -78,7 +79,7 @@ func _ready() -> void:
 	capswriter_asr.button_pressed = controller.config.get("capswriter_asr",true)
 	settings.add_child(capswriter_asr)
 	tts_enabled = CheckBox.new()
-	tts_enabled.text = "播放公开答复（Cloud TTS / Kore；关闭后仅测试文字）"
+	tts_enabled.text = "播放公开答复（Gemini API 3.8 / 人物独立音色；关闭后仅测试文字）"
 	tts_enabled.button_pressed = controller.config.get("tts_enabled",true)
 	settings.add_child(tts_enabled)
 	actions_enabled = CheckBox.new()
@@ -197,11 +198,22 @@ func _ready() -> void:
 	survival_tab.add_child(survival_values)
 	survival_values.text=controller.survival.debug_summary()
 	controller.survival.state_changed.connect(func(): survival_values.text=controller.survival.debug_summary())
+	var saves:=HBoxContainer.new();layout.add_child(saves)
+	for action in [["保存进度","save"],["读取进度","load"],["保存并退出","quit"],["退出且不保存","discard"]]:
+		var button:=Button.new();button.text=action[0];button.name="Session_"+action[1]
+		button.pressed.connect(_session_action.bind(action[1]));saves.add_child(button)
+	session_status=Label.new();session_status.text="保存会停止当前执行步骤，保留现场与未完成任务。";layout.add_child(session_status)
 	var close := Button.new()
 	close.text = "返回洞穴（F1）"
 	close.pressed.connect(toggle)
 	layout.add_child(close)
 	panel.hide()
+
+func _session_action(action: String) -> void:
+	if action in ["quit","discard"]:
+		controller.session_manager.quit_game(action=="quit");return
+	var error: String=await controller.session_manager.save_game() if action=="save" else await controller.session_manager.load_game()
+	if not error.is_empty():session_status.text=error
 
 func _save() -> void:
 	var value: Dictionary = controller.config.duplicate(true)

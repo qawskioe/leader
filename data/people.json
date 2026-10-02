@@ -3,8 +3,8 @@
     "id": "person_001",
     "node": "Person01",
     "name": "石头",
-    "model": "res://assets/characters/person_01.glb",
-    "voice": "",
+    "model": "res://assets/characters/person_v2_01.glb",
+    "voice": "Puck",
     "known_facts": [
       "原部落遭遇天灾，众人刚逃离来到这处山洞。",
       "主角在洞内吃下果子后全身发光，极易辨认。",
@@ -48,8 +48,8 @@
     "id": "person_002",
     "node": "Person02",
     "name": "小花",
-    "model": "res://assets/characters/person_02.glb",
-    "voice": "",
+    "model": "res://assets/characters/person_v2_02.glb",
+    "voice": "Aoede",
     "known_facts": [
       "原部落遭遇天灾，众人刚逃离来到这处山洞。",
       "主角在洞内吃下果子后全身发光，极易辨认。",
@@ -93,8 +93,8 @@
     "id": "person_003",
     "node": "Person03",
     "name": "大山",
-    "model": "res://assets/characters/person_03.glb",
-    "voice": "",
+    "model": "res://assets/characters/person_v2_04.glb",
+    "voice": "Charon",
     "known_facts": [
       "原部落遭遇天灾，众人刚逃离来到这处山洞。",
       "主角在洞内吃下果子后全身发光，极易辨认。",
@@ -138,8 +138,8 @@
     "id": "person_004",
     "node": "Person04",
     "name": "月亮",
-    "model": "res://assets/characters/person_04.glb",
-    "voice": "",
+    "model": "res://assets/characters/person_v2_03.glb",
+    "voice": "Kore",
     "known_facts": [
       "原部落遭遇天灾，众人刚逃离来到这处山洞。",
       "主角在洞内吃下果子后全身发光，极易辨认。",

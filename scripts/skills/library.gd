@@ -9,7 +9,16 @@ func initialize(file_path: String, people: Dictionary) -> String:
 	path=file_path;definitions={};owners={}
 	for id in people: owners[id]=[]
 	if not FileAccess.file_exists(path): return ""
-	var data: Variant=JSON.parse_string(FileAccess.get_file_as_string(path))
+	var parser:=JSON.new()
+	if parser.parse(FileAccess.get_file_as_string(path))!=OK:return "技能库不是有效JSON"
+	return load_data(parser.data,people)
+
+func export_data() -> Dictionary:
+	return {"schema":1,"definitions":definitions,"owners":owners}.duplicate(true)
+
+func load_data(data: Variant, people: Dictionary) -> String:
+	definitions={};owners={}
+	for id in people:owners[id]=[]
 	if not data is Dictionary or data.get("schema")!=1 or not data.get("definitions") is Dictionary or not data.get("owners") is Dictionary: return "技能库格式无效"
 	for ref in data.definitions:
 		var definition: Variant=data.definitions[ref]
@@ -52,7 +61,7 @@ static func _valid_definition(value: Variant) -> bool:
 
 static func valid_argument(value: Variant, kind: String) -> bool:
 	match kind:
-		"reference":return preload("res://scripts/skills/spatial_target.gd").valid(value)
+		"reference":return preload("res://scripts/skills/spatial_target.gd").valid(value,INF)
 		"text":return value is String and value.length()<=400
 		"hand":return value in ["Hand.L","Hand.R"]
 		"boolean":return value is bool
@@ -78,13 +87,13 @@ func register_verified(definition: Dictionary, receipt: Dictionary) -> Dictionar
 func install_builtins() -> String:
 	for id in ["release_object","place_object","look_toward","walk_to","give_object"]:
 		var source:=FileAccess.get_file_as_string("res://data/skills/"+id+".luau")
-		var capabilities: Array=["release","pose_bones","inspect_body","relax"]
+		var capabilities: Array=["release"]
 		var definition:={"id":id,"name":"松手","description":"松开本人实际持有的指定物品","parameters":{"object":"本人已知的可交互物品ID"},"program_json":JSON.stringify(Luau.make_program(source,capabilities))}
 		if id=="place_object":
 			definition.name="放到指定位置"
-			definition.description="将本人持有的物品移到已知放置面，再松手并确认落稳；必须提供观察编号及人物相对坐标，不能用松手替代指定放置。目标较远时先走近；路线、可见性和实际伸手仍由世界检查。"
+			definition.description="将本人持有的物品移到已知放置面，再松手并确认落稳；必须提供观察编号及人物相对坐标，不能用松手替代指定放置。目标较远时先走近；路线、可见性、距离和终点占用仍由世界检查。"
 			definition.parameters={"object":"本人持有的物品ID","target":"{observation_id:本次space_observation.id,position:{x,y,z}}；本人观察时脚底为原点，x右y上z前，单位米；模型自行决定目标。"}
-			definition.program_json=JSON.stringify(Luau.make_program(source,["observe","approach","surface","move_held","check_placement","release","pose","pose_bones","inspect_body","relax"]))
+			definition.program_json=JSON.stringify(Luau.make_program(source,["observe","approach","surface","move_held","check_placement","release"]))
 		if id=="give_object":
 			definition.name="递交手中物品"
 			definition.description="把本人实际握持的物品交给指定人物或玩家，保留原物品和内容（空袋不会自动装水）。不会自动走近；需先到接收者两米内且无阻挡，对方必须有空手。NPC会自行决定接受或拒绝；只有实际持有人转移才算成功。"
@@ -179,7 +188,7 @@ func describe(person_id: String) -> Array:
 	for entry in owners.get(person_id,[]):
 		if entry.has("superseded_by") or entry.get("dependency_only",false): continue
 		var definition: Dictionary=definitions[entry.ref]
-		var descriptor: Dictionary={"ref":entry.ref,"name":definition.name,"description":definition.description,"parameters":definition.parameters.duplicate(true),"learned_from":entry.source,"revision_of":definition.get("revision_of",""),"revision_supported":true,"language":"leader-luau-1"}
+		var descriptor: Dictionary={"id":definition.id,"ref":entry.ref,"name":definition.name,"description":definition.description,"parameters":definition.parameters.duplicate(true),"learned_from":entry.source,"revision_of":definition.get("revision_of",""),"revision_supported":true,"language":"leader-luau-1"}
 		var program: Dictionary=JSON.parse_string(definition.program_json)
 		descriptor["parameter_kinds"]=definition.get("parameter_kinds",{}).duplicate()
 		descriptor["internal"]=definition.get("internal",false)
@@ -192,7 +201,7 @@ func describe(person_id: String) -> Array:
 				for op in component.program.capabilities:
 					if op not in operations: operations.append(op)
 		if definition.parameters.has("object") and operations.any(func(op):return op in ["observe","reach","grasp","release","move_held","check_placement","handover"]):
-			descriptor["object_requirement"]="目标必须已接入身体物品交互，观察记录extra.graspable=true；这只说明物品支持抓握，不表示当前距离已经伸手可及。需结合本人相对坐标判断距离、朝向与姿势，走近和伸手是不同操作。知道位置不代表具备这个接口。未接入的物品应核对现有行为目录或明确能力缺口。"
+			descriptor["object_requirement"]="目标支持抓握时extra.graspable=true；操作距离、视线、归属和终点占用由世界接口检查。位置参数使用本次观察坐标。"
 		result.append(descriptor)
 	return result
 
@@ -201,7 +210,7 @@ func save() -> String:
 	if DirAccess.make_dir_recursive_absolute(directory)!=OK: return "无法创建技能库目录"
 	var file:=FileAccess.open(path+".tmp",FileAccess.WRITE)
 	if file==null: return "无法保存技能库"
-	file.store_string(JSON.stringify({"schema":1,"definitions":definitions,"owners":owners}))
+	file.store_string(JSON.stringify(export_data()))
 	file.close()
 	if DirAccess.rename_absolute(ProjectSettings.globalize_path(path+".tmp"),ProjectSettings.globalize_path(path))!=OK: return "无法完成技能库文件替换"
 	return ""

@@ -31,6 +31,7 @@ func _run() -> void:
 		voice = Voice.new()
 		voice.name = "VoiceTest"
 		scene.add_child(voice)
+	voice.store.memory.path = "user://voice_tests/tts_controller_fixture_memory.json"
 	voice.config.actions_enabled = false
 	voice.survival.enabled = false
 	voice.tts.queue_free()
@@ -42,6 +43,7 @@ func _run() -> void:
 	voice._job_config = {"tts_enabled":true}
 	var decision := {"intent":"none","private_interpretation":"PRIVATE_SENTINEL_847：我绝不会说出来","public_reply":"好，我去。","speech_style":"neutral","routing_reason":"测试"}
 	var report := {"person_id":"person_001","person_name":"石头","event_id":"fixture","calls":[],"decision":decision}
+	voice.store.hear("person_001",{"id":"fixture","kind":"player_speech","speaker":"player","text":"请回应","listeners":["person_001"]})
 	voice.store.remember("person_001","fixture",decision)
 	voice._on_report(report)
 	var silent := report.duplicate(true)
@@ -58,7 +60,7 @@ func _run() -> void:
 	check(voice.store.people.person_001.reflections[0].public_reply_status=="已播放完成；附近成员听闻另行记录","播放成功必须写回人物答复状态")
 	check(voice.store.people.person_002.heard_events.back().kind=="public_speech","附近成员记录公开台词")
 	check(not JSON.stringify(voice.store.people.person_002.heard_events).contains("PRIVATE_SENTINEL_847"),"听众不能获得发言者私下理解")
-	check(fake.calls==[{"text":"好，我去。","style":"neutral","voice":"Kore"}],"只能发送公开台词与语气；沉默和无效决策不调用 TTS")
+	check(fake.calls==[{"text":"好，我去。","style":"neutral","voice":"Puck"}],"只能发送公开台词与语气；沉默和无效决策不调用 TTS")
 	check(not JSON.stringify(fake.calls).contains("PRIVATE_SENTINEL"),"内心活动不可泄露")
 	check(voice._public_dialogue==[{"speaker":"石头","text":"好，我去。"}],"ASR 对话只记录实际播放成功的公开台词")
 	check(not JSON.stringify(voice._public_dialogue).contains("PRIVATE_SENTINEL"),"ASR 上下文不可包含内心")
