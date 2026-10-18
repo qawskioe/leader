@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import threading
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -27,6 +28,35 @@ DONE = {'event_type': 'interaction.completed', 'interaction': {'status': 'comple
 
 
 class ProviderTests(unittest.TestCase):
+    def test_transport_failure_records_phase_without_sensitive_exception_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'runtime').mkdir();(root/'runtime/api-key.txt').write_text('fixture-secret')
+            error=urllib.error.URLError('fixture-secret private speech https://private.invalid/fixture')
+            with patch.object(provider,'ROOT',root),patch.object(provider,'_retry_at',0),patch.object(provider.urllib.request,'build_opener') as network:
+                network.return_value.open.side_effect=error
+                with self.assertRaisesRegex(RuntimeError,'网络连接失败'):
+                    list(provider.synthesize({'text':'private speech','style':'private style','voice':'Kore'}))
+            raw=(root/'runtime/last_transport_error.json').read_text();detail=json.loads(raw)
+            self.assertEqual(detail['stage'],'connect_or_headers');self.assertEqual(detail['audio_packets_sent'],0)
+            self.assertEqual(detail['error_type'],'URLError');self.assertEqual(detail['reason_type'],'str')
+            for sensitive in ('fixture-secret','private speech','private style','https://private.invalid/fixture'):self.assertNotIn(sensitive,raw)
+            self.assertEqual(network.return_value.open.call_count,1)
+
+    def test_transport_disconnect_records_partial_stream_without_retry(self):
+        def interrupted():
+            yield audio()
+            raise ConnectionResetError(10054,'fixture-secret')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'runtime').mkdir();(root/'runtime/api-key.txt').write_text('fixture-secret')
+            with patch.object(provider,'ROOT',root),patch.object(provider,'_retry_at',0),patch.object(provider,'events',return_value=interrupted()),patch.object(provider.urllib.request,'build_opener') as network:
+                network.return_value.open.return_value=io.BytesIO()
+                stream=provider.synthesize({'text':'好','style':'平静','voice':'Kore'})
+                self.assertEqual(next(stream)['type'],'audio')
+                with self.assertRaisesRegex(RuntimeError,'网络连接失败'):next(stream)
+            detail=json.loads((root/'runtime/last_transport_error.json').read_text())
+            self.assertEqual(detail['stage'],'stream');self.assertEqual(detail['audio_packets_sent'],1)
+            self.assertEqual(detail['errno'],10054);self.assertEqual(network.return_value.open.call_count,1)
+
     def test_structured_style_never_enters_transcript(self):
         request = provider.build_request({'text':'好，我听你的。','style':'压住委屈','voice':'Kore'})
         part = request['input'][0]['content'][0]

@@ -16,24 +16,49 @@ var _chunk_cursor := 0
 var continuous_input := false
 var level_db:=-100.0
 var _jobs: Array=[]
+var _device_switch_tasks: Array[int]=[]
+var _exiting:=false
 var _cancel_generation:=0
+var _shutdown_streams: Array[WeakRef]=[]
+var _closing_input:=false
 var recovering:=false
 var reconnect_required:=false
 const AudioTrace=preload("res://scripts/vr/audio_trace.gd")
 
 func prepare_continuous_input() -> void:
+	if _closing_input or _exiting:return
 	continuous_input = true
+	if player.stream==null:player.stream=AudioStreamMicrophone.new()
 	var started := Time.get_ticks_usec()
 	if not player.playing: player.play()
 	effect.clear_buffer()
 	print("MIC_DEVICE_WARMUP_MS ",(Time.get_ticks_usec()-started)/1000.0)
 	AudioTrace.record("mic_warmup",{"elapsed_ms":(Time.get_ticks_usec()-started)/1000.0,"device":AudioServer.input_device})
 
+func stop_for_shutdown() -> String:
+	_closing_input=true
+	continuous_input=false
+	cancel()
+	if player.stream!=null:
+		_shutdown_streams.append(weakref(player.stream))
+		player.stream=null
+	# stop只排队淡出；音频线程移除播放实例后，还需要主线程更新释放引用。
+	# 在树仍运行时等真实释放，不能在_exit_tree里直接quit或盲等固定帧数。
+	var deadline:=Time.get_ticks_msec()+1000
+	while true:
+		for index in range(_shutdown_streams.size()-1,-1,-1):
+			if _shutdown_streams[index].get_ref()==null:_shutdown_streams.remove_at(index)
+		if _shutdown_streams.is_empty():return ""
+		if Time.get_ticks_msec()>=deadline:
+			_closing_input=false;return "收音资源尚未释放，未退出；请稍后重试。"
+		await get_tree().process_frame
+	return ""
+
 func invalidate_connection() -> void:
 	reconnect_required=true
 
 func recover_connection(device: String) -> bool:
-	if recovering: return false
+	if recovering or _exiting or _closing_input: return false
 	recovering=true
 	if recording: cancel()
 	# 只在唤醒或用户主动恢复时重开，不在每句话开始时重复打开设备。
@@ -54,8 +79,10 @@ func recover_connection(device: String) -> bool:
 		recovering=false
 		return false
 	var switched:=await _switch_input_device(intermediate)
+	if _exiting or _closing_input:recovering=false;return false
 	# 即使中途超时，也要把请求恢复到用户指定设备。
 	var restored:=await _switch_input_device(device)
+	if _exiting or _closing_input:recovering=false;return false
 	effect.clear_buffer()
 	continuous_input=true
 	reconnect_required=not (switched and restored);recovering=false
@@ -63,10 +90,25 @@ func recover_connection(device: String) -> bool:
 	return not reconnect_required
 
 func _switch_input_device(device: String) -> bool:
+	if _exiting:return false
+	# WASAPI切换会持有设备锁；即使setter排队，随后读取设备也可能等待数秒。
+	# 设备API只在工作线程调用，场景与录音状态仍由主线程管理。
+	var holder: Dictionary={}
+	var script: Script=get_script()
+	var task:=WorkerThreadPool.add_task(func():holder.value=script.switch_input_device_on_worker(device))
+	_device_switch_tasks.append(task)
+	while not WorkerThreadPool.is_task_completed(task):
+		await get_tree().process_frame
+		if _exiting:return false
+	WorkerThreadPool.wait_for_task_completion(task)
+	_device_switch_tasks.erase(task)
+	return holder.value
+
+static func switch_input_device_on_worker(device: String) -> bool:
 	AudioServer.input_device=device
 	var deadline:=Time.get_ticks_msec()+5000
 	while Time.get_ticks_msec()<deadline:
-		await get_tree().create_timer(0.05).timeout
+		OS.delay_msec(50)
 		if AudioServer.input_device==device:
 			return true
 	return false
@@ -86,7 +128,7 @@ func _ready() -> void:
 	add_child(player)
 
 func start() -> void:
-	if recovering: return
+	if recovering or _exiting or _closing_input: return
 	level_db=-100.0
 	var started := Time.get_ticks_usec()
 	samples.clear()
@@ -235,6 +277,9 @@ static func encode_wav(data: PackedFloat32Array, source_rate: int) -> PackedByte
 	return wav
 
 func _exit_tree() -> void:
+	_exiting=true
+	for task in _device_switch_tasks:WorkerThreadPool.wait_for_task_completion(task)
+	_device_switch_tasks.clear()
 	for job in _jobs: WorkerThreadPool.wait_for_task_completion(job.task)
 	if is_instance_valid(player):
 		player.stop()

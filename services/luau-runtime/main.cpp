@@ -14,6 +14,7 @@
 using Json=nlohmann::json;
 using Clock=std::chrono::steady_clock;
 constexpr size_t MEMORY_LIMIT=32*1024*1024, LINE_LIMIT=1024*1024;
+constexpr size_t TRANSPORT_CHUNK_BYTES=1024;
 struct Task {
     lua_State* vm=nullptr;
     size_t bytes=0;
@@ -122,7 +123,7 @@ int main(){
                 int sequence=input.at("sequence");
                 if(sequence!=next_chunk)throw std::runtime_error("invalid_transport_sequence");
                 std::string hex=input.at("hex");
-                if(hex.size()>768 || hex.size()%2)throw std::runtime_error("invalid_transport_chunk");
+                if(hex.size()>TRANSPORT_CHUNK_BYTES*2 || hex.size()%2)throw std::runtime_error("invalid_transport_chunk");
                 for(size_t i=0;i<hex.size();i+=2){
                     auto digit=[](char c)->int {if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;throw std::runtime_error("invalid_hex");};
                     assembled+=char(digit(hex[i])*16+digit(hex[i+1]));

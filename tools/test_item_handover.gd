@@ -21,7 +21,8 @@ func run() -> void:
 	var submitted: Dictionary=voice.skills.invoke(giver,"empty_bag",{"ref":ref,"arguments":{"object":"water_bag/1","recipient":"player"}})
 	assert(submitted.ok,JSON.stringify(submitted))
 	var actual: Dictionary=await voice.skills.finished
-	assert(actual.success and actual.goal_verified and sim.water.held("player")=="1",JSON.stringify(actual))
+	assert(actual.success and sim.water.held("player")=="1",JSON.stringify(actual))
+	assert(actual.runtime.trace.any(func(step):return step.operation=="handover" and step.result.ok),"交接依据真实世界操作回执")
 	assert(sim.water.bags["1"].contents.count==0 and sim.water.drawn==0,"交空袋不能先去取水或生成水")
 	assert(sim.water.drop("player"))
 	# 同一入口对另一种注册物体成立；这里明确是离线交接/决策夹具。
@@ -40,7 +41,7 @@ func run() -> void:
 		assert(sim.world_objects.objects.test_block.holder==(recipient if answer in ["accept","right_occupied"] else "" if answer=="withdraw" else giver))
 		if answer=="accept":
 			assert(not sim.water.free_hand(recipient,"Hand.R"),"接收后右手确实被占用，不能覆盖同一只手")
-			assert(voice._player_offers.any(func(event):return event.kind=="received_item"))
+			assert(voice._pending_inputs.any(func(entry):return entry.payload.get("kind")=="received_item"))
 		if answer=="right_occupied":
 			assert(sim.world_objects.objects.test_block.hand=="Hand.L" and sim.gathering.hands.has(recipient),"左手接物不得覆盖右手原物资")
 			var expected: Transform3D=sim.world_objects.carry_transform("test_block",sim.actors[recipient].body,"Hand.L")

@@ -6,6 +6,7 @@ const RUN_SPEED := 5.5
 const LOOK_SENSITIVITY := 0.0022
 const SPAWN := Vector3(0.0, 0.5, 8.4)
 const GroundMotion=preload("res://scripts/survival/ground_motion.gd")
+const MouseMode=preload("res://scripts/player_mouse_mode.gd")
 var camera: Camera3D
 const FALL_LIMIT:=-8.0
 var last_safe_position:=SPAWN
@@ -16,11 +17,23 @@ var vr: Node3D
 func is_vr_active() -> bool:
 	return is_instance_valid(vr) and vr.active
 
+func restore_desktop_view() -> void:
+	if is_vr_active():return
+	# VR 的跟踪姿态可相对身体带任意偏航/滚转；PC鼠标则以身体偏航、Eyes俯仰工作。
+	# 保留观看方向，将水平朝向归到身体，避免从VR存档恢复后W横着走、篮子偏到视野外。
+	var forward: Vector3=-camera.global_basis.z.normalized()
+	var horizontal:=Vector3(forward.x,0,forward.z)
+	if horizontal.length_squared()<.0001:
+		horizontal=-global_basis.z;horizontal.y=0
+	horizontal=horizontal.normalized()
+	global_rotation=Vector3(0,atan2(-horizontal.x,-horizontal.z),0)
+	camera.rotation=Vector3(clampf(asin(clampf(forward.y,-1,1)),-1.35,1.35),0,0)
+
 
 func _ready() -> void:
-	for binding in {"player_forward":KEY_W,"player_back":KEY_S,"player_left":KEY_A,"player_right":KEY_D,"player_run":KEY_SHIFT,"player_interact":KEY_F}:
+	for binding in {"player_forward":KEY_W,"player_back":KEY_S,"player_left":KEY_A,"player_right":KEY_D,"player_run":KEY_SHIFT,"player_interact":KEY_F,"player_drink":KEY_Q}:
 		if not InputMap.has_action(binding):InputMap.add_action(binding)
-		var event:=InputEventKey.new();event.physical_keycode={"player_forward":KEY_W,"player_back":KEY_S,"player_left":KEY_A,"player_right":KEY_D,"player_run":KEY_SHIFT,"player_interact":KEY_F}[binding]
+		var event:=InputEventKey.new();event.physical_keycode={"player_forward":KEY_W,"player_back":KEY_S,"player_left":KEY_A,"player_right":KEY_D,"player_run":KEY_SHIFT,"player_interact":KEY_F,"player_drink":KEY_Q}[binding]
 		if not InputMap.action_has_event(binding,event):InputMap.action_add_event(binding,event)
 	collision_mask = 7  # 场景碰撞为 1，成员碰撞为 2。
 	var capsule := CapsuleShape3D.new()
@@ -44,7 +57,7 @@ func _ready() -> void:
 		add_child(vr)
 	floor_snap_length = 0.28
 	if not is_vr_active() and DisplayServer.get_name() != "headless" and not OS.get_cmdline_user_args().has("--capture"):
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		MouseMode.set_mode(self,Input.MOUSE_MODE_CAPTURED)
 
 
 func _mouse_dialog_open() -> bool:
@@ -58,7 +71,7 @@ func _mouse_dialog_open() -> bool:
 func _input(event: InputEvent) -> void:
 	if is_vr_active(): return
 	# 捕获鼠标时必须先于 Control 处理视角，否则头顶卡片会吞掉移动。
-	if event is InputEventMouseMotion and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and not _mouse_dialog_open():
+	if event is InputEventMouseMotion and MouseMode.is_captured(self) and not _mouse_dialog_open():
 		rotate_y(-event.relative.x*LOOK_SENSITIVITY)
 		camera.rotation.x=clampf(camera.rotation.x-event.relative.y*LOOK_SENSITIVITY,-1.35,1.35)
 		get_viewport().set_input_as_handled()
@@ -70,7 +83,7 @@ func _input(event: InputEvent) -> void:
 				for caption in voice.captions.values():
 					if caption.expanded: caption.set_expanded(false)
 			else:
-				Input.mouse_mode=Input.MOUSE_MODE_VISIBLE if Input.mouse_mode==Input.MOUSE_MODE_CAPTURED else Input.MOUSE_MODE_CAPTURED
+				MouseMode.set_mode(self,Input.MOUSE_MODE_VISIBLE if MouseMode.is_captured(self) else Input.MOUSE_MODE_CAPTURED)
 			get_viewport().set_input_as_handled()
 		if event.physical_keycode == KEY_R:
 			if global_position.y<FALL_LIMIT:
@@ -88,16 +101,15 @@ func _input(event: InputEvent) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if is_vr_active(): return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and not _mouse_dialog_open():
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		MouseMode.set_mode(self,Input.MOUSE_MODE_CAPTURED)
 
 func _notification(what: int) -> void:
 	if is_vr_active(): return
+	if MouseMode.is_automated(self):return
 	if what==NOTIFICATION_APPLICATION_FOCUS_OUT:
-		var bridge:=get_parent().get_node_or_null("VoiceTest/PlayerControl")
-		if bridge!=null and bridge.active:return # 桥接会在本次输入结束后释放真实鼠标。
-		Input.mouse_mode=Input.MOUSE_MODE_VISIBLE
+		MouseMode.set_mode(self,Input.MOUSE_MODE_VISIBLE)
 	elif what==NOTIFICATION_APPLICATION_FOCUS_IN and is_instance_valid(camera):
-		if not _mouse_dialog_open(): Input.mouse_mode=Input.MOUSE_MODE_CAPTURED
+		if not _mouse_dialog_open(): MouseMode.set_mode(self,Input.MOUSE_MODE_CAPTURED)
 
 func _ground_below(at: Vector3) -> Dictionary:
 	var query:=PhysicsRayQueryParameters3D.create(at+Vector3.UP*0.5,at-Vector3.UP*1.0,1,[get_rid()])
@@ -154,7 +166,7 @@ func _physics_process(delta: float) -> void:
 		_recover_from_fall()
 		return
 	var axis := Vector2.ZERO
-	if not is_vr_active() and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	if not is_vr_active() and MouseMode.is_captured(self):
 		axis = Vector2(
 			float(Input.is_action_pressed("player_right")) - float(Input.is_action_pressed("player_left")),
 			float(Input.is_action_pressed("player_back")) - float(Input.is_action_pressed("player_forward"))

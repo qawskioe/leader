@@ -26,6 +26,9 @@ static func describe(event: Dictionary, people: Dictionary) -> Dictionary:
 					var changes: PackedStringArray=[]
 					var labels:={"thirst_band":"口渴档位","personal_water":"随身水量","hunger_band":"饥饿档位","storage_food_seen":"看到的库存","carried_food":"手持食物","holding_basket":"持篮状态","knowledge_revision":"观察发现发生变化","personal_basket_food":"自己篮中食物"}
 					for key in trigger.changes:
+						if key=="resources":
+							changes.append("与当前需求相关的食物或水源变化："+", ".join(trigger.changes[key].objects))
+							continue
 						if key=="knowledge_revision":
 							changes.append("观察记录更新：发现新物品或确认了状态变化")
 							continue
@@ -45,6 +48,9 @@ static func describe(event: Dictionary, people: Dictionary) -> Dictionary:
 			title="技能执行后检查原请求"
 			cause=str(event.get("result",{}).get("message",""))
 			purpose="已完成则停止；尚未完成才继续原请求："+str(event.get("original_event",{}).get("text",""))
+		"task_observation_changed":
+			title="等待时观察到玩家变化"
+			purpose="结合当前观察与原请求，决定继续行动还是等待；观察变化本身不指定动作。"
 		"skill_revised":
 			title="动作修订完成"
 			cause="此前教导已落实到新版本，不是收到新的教导。"

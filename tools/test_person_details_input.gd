@@ -1,9 +1,11 @@
 extends SceneTree
 func _initialize(): run.call_deferred()
 func run():
+ create_timer(30).timeout.connect(func():push_error("person details timeout");quit(1))
  var scene=load("res://scenes/initial_base.tscn").instantiate();root.add_child(scene)
  var voice=load("res://scripts/voice/voice_test.gd").new();scene.add_child(voice)
- await preload("res://scripts/skills/luau_playtest.gd").prepare(voice)
+ await preload("res://scripts/skills/luau_playtest.gd").prepare(voice,"user://skills/tests/person_details_%s.json"%Time.get_ticks_usec())
+ voice.config.local_only=true;voice.config.tts_enabled=false
  var card=voice.captions.person_003
  var camera=scene.get_viewport().get_camera_3d()
  var target=card.global_position+Vector3(0,1.65,0)

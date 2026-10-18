@@ -21,7 +21,7 @@ func run() -> void:
 	voice.session_manager.queue_free()
 	var session:=SessionProbe.new();session.host=voice;voice.add_child(session);voice.session_manager=session
 	session.path="user://sessions/quit_dispatch_%d.json"%Time.get_ticks_usec()
-	voice.menu.close();voice._pending_captures.clear();voice._player_offers.clear();voice._execution_feedback.clear()
+	voice.menu.close();voice._pending_inputs.clear();voice._execution_feedback.clear()
 	session.load_failed=true
 	await session.quit_game()
 	assert(not session.quitting,"存档失败后必须取消退出状态，保留人工处理入口")

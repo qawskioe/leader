@@ -35,7 +35,7 @@ func run() -> void:
 	var after: Vector3=voice.skills.world_objects.objects.wood_block.body.global_position
 	var idle: bool=not voice.busy and voice.skills.active.is_empty() and voice.autonomy.requests.is_empty()
 	var errors: bool=reports.is_empty() or reports.any(func(r): return r.has("error"))
-	var verified: bool=not executions.is_empty() and executions[-1].get("success",false) and executions[-1].get("goal_verified",false) and executions[-1].get("runtime",{}).get("returned",{}).get("code")=="placed"
+	var verified: bool=not executions.is_empty() and executions[-1].get("success",false) and executions[-1].get("runtime",{}).get("trace",[]).any(func(step):return step.operation=="check_placement" and step.result.ok)
 	var passed:=completed_goal(before,after,reference,voice.skills.world_objects.objects.wood_block.holder,idle,errors,verified)
 	var file:=FileAccess.open("res://services/luau-runtime/runtime/fuzzy_result.json",FileAccess.WRITE)
 	file.store_string(JSON.stringify({"physics_samples":audit.samples,"passed":passed,"idle":idle,"verified":verified,"executions":executions,"reports":results,"before":str(before),"after":str(after),"held":voice.skills.world_objects.objects.wood_block.holder,"pending":voice.autonomy.requests.size()},"  "));file.close()

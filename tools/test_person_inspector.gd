@@ -40,4 +40,12 @@ func _run() -> void:
 		for frame in 5: await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png("res://previews/person_inspector.png")
 	print("PERSON_INSPECTOR_PASSED: person_identity, live_status, knowledge, recent_results, technical_secondary, stable_selection")
-	scene.queue_free(); await create_timer(0.2).timeout; quit()
+	# 只保留弱引用，检查释放场景后的持续收音资源，不由诊断延长其寿命。
+	var mic_stream: WeakRef=weakref(voice.mic.player.stream)
+	var mic_playback: WeakRef=weakref(voice.mic.player.get_stream_playback())
+	assert((await voice.mic.stop_for_shutdown()).is_empty())
+	scene.queue_free(); await create_timer(0.2).timeout
+	print("INSPECTOR_MIC_RELEASE ",JSON.stringify({"stream_alive":mic_stream.get_ref()!=null,"playback_alive":mic_playback.get_ref()!=null}))
+	if mic_stream.get_ref()!=null or mic_playback.get_ref()!=null:
+		push_error("人物档案场景释放后仍持有麦克风资源");quit(1);return
+	quit()

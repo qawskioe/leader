@@ -5,7 +5,10 @@ const HOME=Vector3(3,0,7)
 const CAPACITY=3
 var sim: Node
 var bags: Dictionary={}
-var player_thirst:=35.0
+var player_needs: Dictionary={"thirst":35.0}
+var player_thirst: float:
+	get:return player_needs.thirst
+	set(value):player_needs.thirst=value
 var drawn:=0
 var consumed:=0
 var spilled:=0
@@ -18,9 +21,10 @@ func _ready() -> void:
 		root.mass=0.4;root.collision_layer=4;root.collision_mask=7;root.continuous_cd=true
 		root.set_meta("display_name","水袋")
 		var visual:=MeshInstance3D.new();root.add_child(visual)
-		var mesh:=SphereMesh.new(); mesh.radius=0.22; mesh.height=0.55
+		var mesh:=CylinderMesh.new();mesh.top_radius=0.16;mesh.bottom_radius=0.22;mesh.height=0.55
 		visual.mesh=mesh
-		var shape:=CapsuleShape3D.new();shape.radius=0.22;shape.height=0.55
+		# 软水袋近似为有平底的容器；圆弧底在轻微坡面会倾倒滚走，导致放置后的地点校验失败。
+		var shape:=CylinderShape3D.new();shape.radius=0.22;shape.height=0.55
 		var collision:=CollisionShape3D.new();collision.shape=shape;root.add_child(collision)
 		var material:=StandardMaterial3D.new(); material.albedo_color=Color(0.48,0.27,0.10)
 		visual.material_override=material
@@ -34,7 +38,13 @@ func _ready() -> void:
 		bags[key]=sim.world_objects.objects["water_bag/"+key]
 		bags[key]["xr_kind"]="water"
 		bags[key].merge({"root":root,"label":label,"spawn":at,"contents":preload("res://scripts/survival/container_contents.gd").new("water",CAPACITY),"kind":"water_bag","extra":water_properties.bind(key)},true)
-		sim.content_interaction.register_container("water_bag/"+key,bags[key],Vector3(0,0.28,0))
+		sim.content_interaction.register_container("water_bag/"+key,bags[key],Vector3(0,0.28,0),_contents_changed.bind(key))
+
+func _contents_changed(key: String) -> void:
+	# 流体在袋内由水量显示；手中临时水团不能留在存入前的位置。
+	for item in bags[key].contents.items:
+		if is_instance_valid(item.get("visual")):item.visual.queue_free()
+		item.erase("visual")
 
 func water_properties(key: String) -> Dictionary:
 	return {"water":bags[key].contents.count,"contents":bags[key].contents.describe()}
@@ -62,47 +72,38 @@ func free_hand(id: String, hand: String="Hand.R") -> bool:
 func reach(id: String, at: Vector3) -> bool:
 	return sim.gathering._reachable(id,at+Vector3(0,0.3,0),2.6)
 
-func pickup(id: String, key: String) -> bool:
-	if not bags.has(key) or bags[key].holder!="" or not free_hand(id) or not reach(id,bags[key].root.global_position): return false
-	return sim.world_objects.attach_to("water_bag/"+key,id,"Hand.R",hold_pose.bind(id)).ok
+func pickup(id: String, key: String, hand: String="Hand.R") -> bool:
+	assert(hand in ["Hand.L","Hand.R"])
+	if not bags.has(key) or bags[key].holder!="" or not free_hand(id,hand) or not reach(id,bags[key].root.global_position): return false
+	return sim.world_objects.attach_to("water_bag/"+key,id,hand,hold_pose.bind(id)).ok
 
 func drop(id: String) -> bool:
+	return drop_result(id).ok
+
+func drop_result(id: String) -> Dictionary:
 	var key:=held(id)
-	if key=="": return false
+	if key=="": return {"ok":false,"code":"not_held"}
 	sim.world_objects.sync_held("water_bag/"+key)
 	var released: Dictionary=sim.world_objects.release("water_bag/"+key,id)
-	if not released.ok:return false
+	if not released.ok:return released
 	if id!="player":
 		sim.perception._record(id,"water_bag/"+key,"water_bag",sim.world_objects.grip_position("water_bag/"+key),true,sim.world_objects.observable_extra("water_bag/"+key))
 		sim.perception.memories[id]["water_bag/"+key].source="本人刚刚放下水袋"
-	return true
+	return released
 
 func fill(id: String) -> bool:
 	var key:=held(id)
-	if key=="" or not reach(id,SOURCE): return false
-	var quantity: int=bags[key].contents.free_space
-	for index in quantity:
-		var added: Dictionary=bags[key].contents.add({"source":"water_source"})
-		assert(added.ok)
-	drawn+=quantity
-	return true
+	if key=="":return false
+	return sim.life_world.fill_container(id,"water_source","water_bag/"+key).ok
 
 func drink(id: String, key: String="", use_source: bool=false) -> bool:
 	if key=="" and not use_source:
 		key=held(id)
 		if key!="" and bags[key].contents.count==0 and reach(id,SOURCE): key=""
 	if key!="":
-		if not bags.has(key) or bags[key].contents.count<=0: return false
-		if bags[key].holder!=id and (bags[key].holder!="" or not reach(id,bags[key].root.global_position)): return false
-		var taken: Dictionary=bags[key].contents.take()
-		assert(taken.ok)
-	else:
-		if not reach(id,SOURCE): return false
-		drawn+=1
-	consumed+=1
-	if id=="player": player_thirst=maxf(0,player_thirst-45)
-	else: sim.store.people[id].needs.thirst=maxf(0,sim.store.people[id].needs.thirst-45)
-	return true
+		if not bags.has(key):return false
+		return sim.life_world.consume_contents(id,"water_bag/"+key).ok
+	return sim.life_world.consume_source(id,"water_source").ok
 
 func give(id: String, recipient: String) -> Dictionary:
 	var key:=held(id)
@@ -126,48 +127,82 @@ func give(id: String, recipient: String) -> Dictionary:
 	return {"success":true,"category":"","message":"把水袋实际交给对方"}
 
 func player_hint() -> String:
+	var target:=player_target()
+	if target.is_empty():return ""
+	var blocked:=player_blocked(target)
+	return blocked if not blocked.is_empty() else "F · "+player_description(target)
+
+func player_target(drink_only: bool=false) -> String:
+	var carried:=held("player")
+	if drink_only:
+		if not carried.is_empty() and bags[carried].contents.count>0:return "water/drink/"+carried
+		return "water/drink/source" if sim.life_world.access_source("player","water_source").ok else ""
 	var camera: Camera3D=sim.scene.get_node("Player/Eyes")
-	if aimed(camera,SOURCE): return "F · 装满水袋" if held("player")!="" else "F · 在水源喝水"
-	for bag in bags.values():
-		if free_hand("player") and bag.holder=="" and aimed(camera,bag.root.global_position): return "F · 拿起水袋（%d 份水）"%bag.contents.count
-	if held("player")!="":
+	var selector:=preload("res://scripts/player_target_selector.gd").new(camera)
+	add_player_targets(selector)
+	return selector.target
+
+func add_player_targets(selector: RefCounted) -> void:
+	var carried:=held("player")
+	selector.consider("water/fill/"+carried if not carried.is_empty() else "water/drink/source",SOURCE,2.6,.65)
+	for key in bags:
+		var bag: Dictionary=bags[key]
+		if free_hand("player") and bag.holder=="":selector.consider("water/pickup/"+key,bag.root.global_position,2.6,.65)
+	if not carried.is_empty():
 		for id in sim.actors:
-			if aimed(camera,owner(id).global_position+Vector3(0,1,0)):
-				var check: Dictionary=sim.gathering.offer_availability(id,"water")
-				return "F · 递水袋给"+sim.store.people[id].name+"（等待对方决定）" if check.ok else check.message
+			selector.consider("water/offer/"+id,owner(id).global_position+Vector3(0,1,0),2.6,.65)
+
+func player_description(target: String) -> String:
+	var key:=target.get_slice("/",2)
+	match target.get_slice("/",1):
+		"fill":return "装满水袋"
+		"drink":return "在水源喝水" if key=="source" else "喝水袋里的水"
+		"pickup":return "拿起水袋（%d 份水）"%bags[key].contents.count
+		"offer":return "递水袋给"+sim.store.people[key].name+"（等待对方决定）"
+	assert(false,"未知玩家水交互目标")
+	return ""
+
+func player_blocked(target: String) -> String:
+	var key:=target.get_slice("/",2)
+	match target.get_slice("/",1):
+		"fill":
+			if bags[key].contents.free_space==0:return "水袋已满"
+			if not sim.life_world.access_source("player","water_source").ok:return "再靠近水源，或移开取水路线上的阻挡"
+		"drink":
+			if key=="source" and not sim.life_world.access_source("player","water_source").ok:return "再靠近水源，或移开取水路线上的阻挡"
+		"offer":return sim.gathering.offer_availability(key,"water").get("message","")
 	return ""
 
 func _physics_process(delta: float) -> void:
-	if not sim.ready_for_actions or not sim.enabled: return
+	if not sim.ready_for_actions:return
+	_update_labels()
+	if not sim.enabled:return
 	player_thirst=minf(100,player_thirst+0.035*delta)
+
+func _update_labels() -> void:
+	var vr_active: bool=sim.scene.get_node("Player").is_vr_active()
 	for bag in bags.values():
-		var desktop_held: bool=bag.holder=="player" and not sim.scene.get_node("Player").is_vr_active()
+		var desktop_held: bool=bag.holder=="player" and not vr_active
+		# VR 手中物品的数量进入手柄提示，避免大号物品标签盖住操作说明。
+		bag.label.visible=not (bag.holder=="player" and vr_active)
 		bag.label.pixel_size=0.0015 if desktop_held else 0.005
 		bag.label.position.y=0.32 if desktop_held else 0.45
 		bag.label.text="水袋 · %d / %d"%[bag.contents.count,CAPACITY]
 
-func player_interact() -> bool:
-	var camera: Camera3D=sim.scene.get_node("Player/Eyes")
-	if aimed(camera,SOURCE):
-		var ok:=fill("player") if held("player")!="" else drink("player")
-		sim.gathering.interaction_result.emit({"action":"取水／饮水","ok":ok}); return true
-	for key in bags:
-		if free_hand("player") and bags[key].holder=="" and aimed(camera,bags[key].root.global_position):
-			sim.gathering.interaction_result.emit({"action":"拿水袋","ok":pickup("player",key)}); return true
-	if held("player")!="":
-		for id in sim.actors:
-			if aimed(camera,owner(id).global_position+Vector3(0,1,0)):
-				var check: Dictionary=sim.gathering.offer_availability(id,"water")
-				if not check.ok:
-					sim.gathering.interaction_result.emit({"action":"递出水袋","ok":false,"message":check.message});return true
-				var offered: String=sim.gathering.offer_item(id,"water")
-				sim.gathering.interaction_result.emit({"action":"递出水袋","ok":offered!="","pending":offered!=""})
-				return true
-	return false
-
-func aimed(camera: Camera3D, at: Vector3) -> bool:
-	var delta:=at-camera.global_position
-	return delta.length()<2.6 and (-camera.global_basis.z).dot(delta.normalized())>0.65
+func player_interact(target: String) -> Dictionary:
+	var kind:=target.get_slice("/",1)
+	var key:=target.get_slice("/",2)
+	# 计时结束时再次核实原目标；不能给换手后的袋子结算旧动作。
+	if target!=player_target(kind=="drink") or not player_blocked(target).is_empty():return {"ok":false}
+	match kind:
+		"fill":return {"ok":fill("player")}
+		"drink":return {"ok":drink("player","" if key=="source" else key,key=="source")}
+		"pickup":return {"ok":pickup("player",key)}
+		"offer":
+			var offered: String=sim.gathering.offer_item(key,"water")
+			return {"ok":not offered.is_empty(),"pending":not offered.is_empty()}
+	assert(false,"未知玩家水交互目标")
+	return {"ok":false}
 
 func reset() -> void:
 	for key in bags:

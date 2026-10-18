@@ -65,11 +65,12 @@ class Host:
                 if 'id' not in message:self.send_response(202);self.end_headers();return
                 method=message.get('method');params=message.get('params',{})
                 if method=='initialize':result={'protocolVersion':params.get('protocolVersion','2024-11-05'),'capabilities':{'tools':{}},'serverInfo':{'name':'leader-verifier','version':'1'}}
-                elif method=='tools/list':result={'tools':[{'name':'verify_skill','description':'使用宿主Godot独立回放当前技能；不能用文字宣称成功。失败可继续改文件后重试。','inputSchema':{'type':'object','properties':{},'additionalProperties':False}}]}
-                elif method=='tools/call' and params.get('name')=='verify_skill' and not params.get('arguments',{}):
-                    try:verdict=owner.verify()
+                elif method=='tools/list':result={'tools':[{'name':'verify_skill','description':'mode=inspect读取当前文件计划的调用数、剩余总时间、整组回放预算与独立审查预留；不启动回放、不消耗验证次数。mode=run使用宿主Godot独立回放当前技能，返回实际预算收据。整组共享预算，每次调用没有单独保证时长；按实际进展设计有界结束和续办。失败可修订后重试，文字不能代替验证。','inputSchema':{'type':'object','properties':{'mode':{'type':'string','enum':['inspect','run']}},'required':['mode'],'additionalProperties':False}}]}
+                elif method=='tools/call' and params.get('name')=='verify_skill' and isinstance(params.get('arguments'),dict) and set(params['arguments'])=={'mode'} and params['arguments']['mode'] in ('inspect','run'):
+                    mode=params['arguments']['mode']
+                    try:verdict=owner.verify(mode)
                     except Exception as error:verdict={'passed':False,'error':type(error).__name__+': '+str(error)[:300]}
-                    owner.calls.append(verdict)
+                    if mode=='run':owner.calls.append(verdict)
                     result={'content':[{'type':'text','text':json.dumps(verdict,ensure_ascii=False)}],'isError':False}
                 elif method=='ping':result={}
                 else:

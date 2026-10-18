@@ -322,8 +322,8 @@
     },
     {
       "path": "assets/environment/vr_tree_lods.glb",
-      "bytes": 10208092,
-      "sha256": "9d33b5b241753f3e0c7655f38ddaa01db70e8793ebb34da0cd68b9355b376f54"
+      "bytes": 7674916,
+      "sha256": "642c2bc2f5dcc74106c938a2f0310bab52aad0e1ee82c29aeb081c6582f6af44"
     },
     {
       "path": "assets/environment/vr_tree_lods_tree_small_02_arm_1k.jpg",

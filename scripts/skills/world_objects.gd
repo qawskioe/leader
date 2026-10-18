@@ -2,6 +2,7 @@ extends Node
 ## 世界拥有物体及持有关系；普通拿取使用近距与视线检查，不依赖骨骼接触。
 var objects: Dictionary={}
 var held: Dictionary={}
+const BODY_CLEARANCE_M:=0.08
 
 func has_held(person: String) -> bool:
 	return held.keys().any(func(key):return str(key).begins_with(person+"/"))
@@ -27,6 +28,34 @@ func player_hold_transform(id: String, player: Node3D) -> Transform3D:
 	var pose:=frame.global_transform*Transform3D(Basis.IDENTITY,offset)
 	if player.is_vr_active() and not record.xr_kind.is_empty():
 		pose=player.vr.hands.transform_for(record.xr_kind,pose,player.vr)
+		pose=vr_hold_outside_body(id,player,pose)
+	return pose
+
+func vr_hold_outside_body(id: String, player: Node3D, pose: Transform3D) -> Transform3D:
+	# 简化持物槽避开玩家身体；物品始终显示在实际释放位置，不要求现实手臂伸出胶囊外。
+	# 不移动玩家、不关闭任何碰撞；墙壁和其他物品仍由真实释放检查决定。
+	var body_low:=INF;var body_high:=-INF
+	for child in player.get_children():
+		if not child is CollisionShape3D or child.disabled:continue
+		body_low=minf(body_low,shape_support_point(child.shape,player.global_transform*child.transform,Vector3.DOWN).y)
+		body_high=maxf(body_high,shape_support_point(child.shape,player.global_transform*child.transform,Vector3.UP).y)
+	var item_low:=INF;var item_high:=-INF
+	for child in objects[id].body.get_children():
+		if not child is CollisionShape3D or child.disabled:continue
+		item_low=minf(item_low,shape_support_point(child.shape,pose*child.transform,Vector3.DOWN).y)
+		item_high=maxf(item_high,shape_support_point(child.shape,pose*child.transform,Vector3.UP).y)
+	if item_low>body_high+BODY_CLEARANCE_M or item_high<body_low-BODY_CLEARANCE_M:return pose
+	var offset:=pose.origin-player.global_position;offset.y=0
+	var direction:=offset.normalized() if offset.length_squared()>.0001 else player.global_basis.x*(-1 if objects[id].hand=="Hand.L" else 1)
+	var body_extent:=0.0;var item_extent:=0.0
+	for child in player.get_children():
+		if child is CollisionShape3D and not child.disabled:
+			body_extent=maxf(body_extent,(shape_support_point(child.shape,player.global_transform*child.transform,direction)-player.global_position).dot(direction))
+	for child in objects[id].body.get_children():
+		if child is CollisionShape3D and not child.disabled:
+			item_extent=maxf(item_extent,(shape_support_point(child.shape,pose*child.transform,-direction)-pose.origin).dot(-direction))
+	var required:=body_extent+item_extent+BODY_CLEARANCE_M
+	if offset.length()<required:pose.origin+=direction*(required-offset.length())
 	return pose
 
 func observable_extra(id: String) -> Dictionary:
@@ -48,7 +77,7 @@ func attach_to(id: String, person: String, hand: String, attachment: Callable) -
 	body.freeze=true;body.linear_velocity=Vector3.ZERO;body.angular_velocity=Vector3.ZERO
 	body.collision_layer=0;body.collision_mask=0
 	sync_held(id)
-	return {"ok":true,"code":"attached","object":id}
+	return {"ok":true,"code":"attached","object":id,"holder":record.holder,"hand":record.hand}
 
 func transfer_attachment(id: String, giver: String, recipient: String, hand: String, attachment: Callable) -> Dictionary:
 	if not objects.has(id) or objects[id].holder!=giver:return {"ok":false,"code":"not_held"}
@@ -59,7 +88,7 @@ func transfer_attachment(id: String, giver: String, recipient: String, hand: Str
 	record.holder=recipient;record.hand=hand;record.attachment=attachment;record.attachment_frame="body"
 	held[recipient+"/"+hand]=id
 	sync_held(id)
-	return {"ok":true,"code":"transferred","object":id}
+	return {"ok":true,"code":"transferred","object":id,"holder":record.holder,"hand":record.hand}
 
 func grip_position(id: String) -> Vector3:
 	return objects[id].body.to_global(objects[id].grip)
@@ -78,7 +107,7 @@ func carry_transform(id: String, actor: Node3D, hand: String) -> Transform3D:
 		if not child is CollisionShape3D or child.disabled:continue
 		var bounds: AABB=child.shape.get_debug_mesh().get_aabb()
 		for i in 8:actor_front=maxf(actor_front,(child.transform*bounds.get_endpoint(i)).z)
-	var forward:=maxf(.60,actor_front-rear+.08)
+	var forward:=maxf(.60,actor_front-rear+BODY_CLEARANCE_M)
 	var socket:=Transform3D(actor.global_basis,actor.to_global(Vector3(.42 if hand=="Hand.L" else -.42,.95,forward)))
 	socket.origin-=socket.basis*objects[id].grip
 	return socket
@@ -109,7 +138,7 @@ func release(id: String, person: String) -> Dictionary:
 	if not contacts.is_empty():
 		return {"ok":false,"code":"release_overlapping","object":id,"contacts":contact_kinds(contacts),"message":"持有物当前与实体重叠，尚未松手；先将物品移到无重叠位置再释放。"}
 	_detach(id)
-	return {"ok":true,"code":"released","object":id}
+	return {"ok":true,"code":"released","object":id,"holder":objects[id].holder,"hand":objects[id].hand}
 
 func _detach(id: String) -> void:
 	var record: Dictionary=objects[id]
@@ -130,6 +159,14 @@ func release_contacts(id: String) -> Array:
 	return pose_contacts(id,objects[id].body.global_transform)
 
 func pose_contacts(id: String, at: Transform3D) -> Array:
+	var contacts: Array=[]
+	for hit in pose_intersections(id,at):
+		var collider: CollisionObject3D=hit.collider
+		var kind: String="person" if collider is CharacterBody3D else ("movable_object" if collider is RigidBody3D else "environment")
+		if kind not in contacts:contacts.append(kind)
+	return contacts
+
+func pose_intersections(id: String, at: Transform3D) -> Array:
 	# 只查询指定刚体姿态；不移动实体，也不豁免持有者碰撞。
 	var record: Dictionary=objects[id]
 	var body: RigidBody3D=record.body
@@ -141,11 +178,19 @@ func pose_contacts(id: String, at: Transform3D) -> Array:
 		query.collision_mask=record.saved.mask;query.exclude=[body.get_rid()]
 		# 零额外裕量，不把接近地面误作穿透，也不关闭与人物或环境的碰撞。
 		query.margin=0.0
-		for hit in body.get_world_3d().direct_space_state.intersect_shape(query):
-			var collider: CollisionObject3D=hit.collider
-			var kind: String="person" if collider is CharacterBody3D else ("movable_object" if collider is RigidBody3D else "environment")
-			if kind not in contacts:contacts.append(kind)
+		contacts.append_array(body.get_world_3d().direct_space_state.intersect_shape(query))
 	return contacts
+
+static func horizontal_extent(body: Node3D, pose: Transform3D, direction: Vector3) -> float:
+	# 普通交互用碰撞外框保守确定站位，不求解骨骼或接触动作。
+	var extent:=0.0
+	for child in body.get_children():
+		if not child is CollisionShape3D or child.disabled:continue
+		var bounds: AABB=child.shape.get_debug_mesh().get_aabb()
+		for index in 8:
+			var point: Vector3=pose*child.transform*bounds.get_endpoint(index)
+			extent=maxf(extent,(point-pose.origin).dot(direction))
+	return extent
 
 func change_grip(id: String, person: String, hand: String, body_state: RefCounted) -> Dictionary:
 	if hand not in ["Hand.L","Hand.R"]:return {"ok":false,"code":"invalid_hand"}
@@ -193,10 +238,11 @@ static func shape_bottom_y(collision: CollisionShape3D) -> float:
 	return shape_bottom_point(collision).y
 
 static func shape_bottom_point(collision: CollisionShape3D) -> Vector3:
+	return shape_support_point(collision.shape,collision.global_transform,Vector3.DOWN)
+
+static func shape_support_point(shape: Shape3D, transform: Transform3D, world_direction: Vector3) -> Vector3:
 	# 支撑方向变换到碰撞形状局部空间；旋转包围盒角点不在圆形物体表面上。
-	var transform: Transform3D=collision.global_transform
-	var direction: Vector3=transform.basis.transposed()*Vector3.DOWN
-	var shape: Shape3D=collision.shape
+	var direction: Vector3=transform.basis.transposed()*world_direction
 	var support:=Vector3.ZERO
 	if shape is SphereShape3D:
 		support=direction.normalized()*shape.radius
@@ -211,13 +257,15 @@ static func shape_bottom_point(collision: CollisionShape3D) -> Vector3:
 	else:
 		# 其他形状使用实际调试网格顶点，不能再用包围盒替代形状。
 		var mesh: ArrayMesh=shape.get_debug_mesh()
-		var lowest:=Vector3(0,INF,0)
+		var furthest:=Vector3.ZERO
+		var score:=-INF
 		for surface in mesh.get_surface_count():
 			for vertex: Vector3 in mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]:
 				var point:=transform*vertex
-				if point.y<lowest.y:lowest=point
-		assert(lowest.is_finite(),"碰撞形状没有可测量的表面")
-		return lowest
+				var projected: float=point.dot(world_direction)
+				if projected>score:score=projected;furthest=point
+		assert(is_finite(score),"碰撞形状没有可测量的表面")
+		return furthest
 	return transform*support
 
 func sync_held(id: String) -> void:

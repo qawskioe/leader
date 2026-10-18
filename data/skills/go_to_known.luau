@@ -54,8 +54,10 @@ return function(args, context)
             if blocked>5 then return {ok=false,code="no_route_progress",message="本段多次未接近已知目标，需要重新判断路线"} end
             local best=nil
             local best_score=math.huge
+            local best_confirmed=false
             for _,sample in ipairs(seen.near.ground_samples) do
-                if sample.state=="visible_surface" and sample.path_clear and sample.slope_degrees<35 and math.abs(sample.position.y)<0.35 then
+                -- 连续缓坡的终点可以累计升高；跨台阶与碰撞限制由真实身体移动检查。
+                if sample.state=="visible_surface" and sample.slope_degrees<35 then
                     local at=sample.position
                     local length=math.sqrt(at.x*at.x+at.z*at.z)
                     if length>0.55 then
@@ -66,7 +68,11 @@ return function(args, context)
                         local key=math.floor(mx/0.75)..":"..math.floor(mz/0.75)
                         local score=remaining+math.abs(at.x)*0.03+(visited[key] or 0)*3
                         if blocked>0 then score-=math.abs(at.x)*0.5 end
-                        if score<best_score then best=at best_score=score end
+                        -- 身体预判是选路线索；未确认的可见地面仍能有限试走，合法性由实际运动决定。
+                        local confirmed=sample.path_clear==true
+                        if not best or (confirmed and not best_confirmed) or (confirmed==best_confirmed and score<best_score) then
+                            best=at best_score=score best_confirmed=confirmed
+                        end
                     end
                 end
             end
@@ -103,11 +109,15 @@ return function(args, context)
                     local around=world.request("walk_options",{})
                     local next_step=nil
                     local cost=math.huge
+                    local next_confirmed=false
                     for _,sample in ipairs(around.near.ground_samples) do
-                        if sample.state=="visible_surface" and sample.path_clear and sample.slope_degrees<35 and math.abs(sample.position.y)<0.35 then
+                        if sample.state=="visible_surface" and sample.slope_degrees<35 then
                             local q=sample.position
                             local candidate=math.abs(q.z-1.5)+math.abs(q.x)
-                            if q.z>=0.75 and candidate<cost then next_step=q cost=candidate end
+                            local confirmed=sample.path_clear==true
+                            if q.z>=0.75 and (not next_step or (confirmed and not next_confirmed) or (confirmed==next_confirmed and candidate<cost)) then
+                                next_step=q cost=candidate next_confirmed=confirmed
+                            end
                         end
                     end
                     if next_step then

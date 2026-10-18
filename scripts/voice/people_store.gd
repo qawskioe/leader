@@ -1,5 +1,9 @@
 extends RefCounted
 ## 事实、听闻、主观理解、实际结果和技能索引分别保存。测试角色背景不代表正式设定。
+# 历史条目只读；可变状态仍按当前世界更新。
+const HISTORY_FIELDS=["heard_events","reflections","execution_results","skill_knowledge"]
+const HISTORY_KINDS={"heard_events":"heard","reflections":"reflection","execution_results":"action","skill_knowledge":"skill"}
+var _retired_history_tasks: Array[int]=[]
 
 var people: Dictionary = {}
 # 只保留本次会话现场；持久记忆仍由人物主动检索。
@@ -63,6 +67,7 @@ func hear(id: String, event: Dictionary) -> void:
 	# 角色不自动知道还有谁听到了，也看不到他人的判断。
 	record.erase("listeners")
 	record.erase("positions")
+	record.erase("player_voice_sources") # 宿主的听众声源索引不是人物经历；本人位置线索由感知层记录。
 	if record.has("spatial_segments"):
 		var visible: Array=[]
 		var texts: PackedStringArray=[]
@@ -76,9 +81,9 @@ func hear(id: String, event: Dictionary) -> void:
 		record.spatial_segments=visible
 		record.text=" ".join(texts)
 	if not working_events.has(id): working_events[id]=[]
-	working_events[id].append({"event":record.duplicate(true),"at":memory.clock})
-	people[id].heard_events.append(record)
-	memory.put(id,"heard",event.id,record)
+	working_events[id].append(memory.freeze_owned({"event":record.duplicate(true),"at":memory.clock}))
+	var key: String=memory.put(id,"heard",event.id,record)
+	people[id].heard_events.append(memory.records[id][key].data)
 	if event.get("speaker","") not in ["","world","body"]: memory.contact(id,event.speaker)
 
 func context_for(id: String) -> Dictionary:
@@ -86,6 +91,10 @@ func context_for(id: String) -> Dictionary:
 	context.erase("node")
 	context.erase("model")
 	context.erase("voice")
+	if context.get("learning") is Dictionary:
+		# 工具事件在开发档案保留；日常人物只接收学习目标、阶段与实际结果。
+		context.learning.erase("technical_message")
+		context.learning.erase("review")
 	context["working_context"]=working_context(id)
 	return context
 
@@ -106,6 +115,7 @@ func working_context(id: String) -> Dictionary:
 		turns.append(turn)
 	var task: Dictionary=working_tasks.get(id,{}).duplicate(true)
 	task.erase("observations") # 世界坐标在空间层转换，不能直接给模型。
+	task.erase("execution_origin") # 请求原点的世界变换仅供宿主定位自身运动。
 	return {"recent_turns":turns,"task":task,"meaning":"当天短期经历直接可用，own_understanding是自己当时的理解而非世界事实；自己的台词是否真正说出以status为准。task是此前接受的任务记录，不覆盖玩家当前的取消或改口；停止不等于完成。"}
 
 func remember_skill(id: String, subject: String, goal: String, kind: String, source: String, event_id: String) -> void:
@@ -114,8 +124,9 @@ func remember_skill(id: String, subject: String, goal: String, kind: String, sou
 	var records: Array=people[id].skill_knowledge
 	for item in records:
 		if item.event_id==event_id and item.person_id==subject and item.goal_id==goal: return
-	records.append({"person_id":subject,"goal_id":goal,"source_kind":kind,"source":source,"event_id":event_id,"recorded_at":Time.get_datetime_string_from_system(),"meaning":"过去的线索，不保证对方现在有空或愿意教"})
-	memory.put(id,"skill",event_id+"/"+subject+"/"+goal,records[-1],0.7)
+	var record:={"person_id":subject,"goal_id":goal,"source_kind":kind,"source":source,"event_id":event_id,"recorded_at":Time.get_datetime_string_from_system(),"meaning":"过去的线索，不保证对方现在有空或愿意教"}
+	var key: String=memory.put(id,"skill",event_id+"/"+subject+"/"+goal,record,0.7)
+	records.append(memory.records[id][key].data)
 
 func remember(id: String, event_id: String, decision: Dictionary, action_snapshot: Dictionary={}) -> void:
 	var has_action: bool=decision.get("skill_call")!=null or decision.get("intent","none") not in ["none", ""] or decision.get("learning_request")!=null or decision.get("revision_request")!=null
@@ -148,6 +159,7 @@ func remember(id: String, event_id: String, decision: Dictionary, action_snapsho
 			superseded_tasks[id+"/"+str(old_request.id)]=request.id
 		var same: bool=previous.get("request",{}).get("id")==request.id
 		working_tasks[id]={"request":request,"action_event_id":event_id,"state":"action_submitted" if has_action else decision.task_handling.state,"last_call":decision.get("skill_call"),"understanding":previous.get("understanding",decision.private_interpretation) if same else decision.private_interpretation,"observations":previous.get("observations",{}) if same else memory.observations[id].duplicate(true),"progress":previous.get("progress",[]) if same else [],"meaning":"正在处理的明确请求，已选择一步行动或询问/等待/受阻，不代表整个请求完成；understanding是接下任务时自己的理解，观察位置是当时所见，不保证物品现在仍在那里。"}
+		if same and previous.has("execution_origin"):working_tasks[id]["execution_origin"]=previous.execution_origin.duplicate(true)
 		# 等待已启动的动作时，完成通知仍来自动作原来的事件，而非这句新话。
 		# 使用模型实际收到的快照：模型思考期间动作可能已结束。
 		if not has_action and decision.get("task_handling",{}).get("state")=="wait" and action_snapshot.get("status")=="执行中" and action_snapshot.get("source_event_id","")!="":
@@ -160,30 +172,46 @@ func remember(id: String, event_id: String, decision: Dictionary, action_snapsho
 					var outcome:={"result":result.duplicate(true)}
 					preload("res://scripts/skills/egocentric_space.gd").sanitize_event(outcome)
 					working_tasks[id]["last_result"]=outcome.result
-	elif not independent and working_tasks.has(id) and event_for(id,event_id).get("kind","")=="skill_progress":
+	elif decision_targets_task(id,event_id,scope) and event_for(id,event_id).get("kind","")=="skill_progress":
 		working_tasks[id].state="stopped_no_action"
 		working_tasks[id]["stop_reason"]=decision.get("routing_reason","")
-	if not independent and working_tasks.has(id) and decision.has("task_handling"):
+	var handles_task:=decision_targets_task(id,event_id,scope)
+	if handles_task and decision.has("task_handling"):
 		working_tasks[id]["handling"]=decision.task_handling.duplicate(true)
 		if decision.task_handling.state not in ["execute","none"]: working_tasks[id].state=decision.task_handling.state
 		memory.dirty=true
-	if not independent and working_tasks.has(id) and decision.get("task_status") in ["completed","cancelled"]:
+	if handles_task and decision.get("task_status") in ["completed","cancelled"]:
 		working_tasks[id].state=decision.task_status
 		memory.dirty=true
-	people[id].reflections.append({"event_id":event_id,"recorded_time":Time.get_datetime_string_from_system(),"private_interpretation":decision.private_interpretation,"public_reply":decision.public_reply,"public_reply_status":"保持沉默" if decision.public_reply.strip_edges().is_empty() else "已生成，尚未播放"})
-	memory.put(id,"reflection",event_id,people[id].reflections[-1],0.4)
+	var reflection: Dictionary={"event_id":event_id,"recorded_time":Time.get_datetime_string_from_system(),"private_interpretation":decision.private_interpretation,"public_reply":decision.public_reply,"public_reply_status":"保持沉默" if decision.public_reply.strip_edges().is_empty() else "已生成，尚未播放"}
+	var key: String=memory.put(id,"reflection",event_id,reflection,0.4)
+	people[id].reflections.append(memory.records[id][key].data)
+
+func decision_targets_task(id: String, event_id: String, scope: String) -> bool:
+	if scope=="independent" or not working_tasks.has(id):return false
+	if scope=="existing_request":return true
+	var event: Dictionary=event_for(id,event_id)
+	# 完成当前问题只处理当前来源；没有接下新行动时，旧任务仍留在原处等待。
+	return working_tasks[id].request.id==event.get("original_event",event).id
 
 func is_person_request(event: Dictionary) -> bool:
-	return event.get("speaker")=="player" or (people.has(event.get("speaker","")) and event.get("kind") in ["social_request","information_request","item_offer"])
+	return event.get("speaker")=="player" or (people.has(event.get("speaker","")) and event.get("kind") in ["social_request","information_request","item_offer","skill_lesson_offer","skill_lesson_request"])
 
 func mark_reply(id: String, event_id: String, status: String) -> void:
-	assert(status in ["正在向玩家播放，尚未完整说完","已向玩家播放完成；未投递给其他成员","已播放完成；附近成员听闻另行记录","播放失败，不能确认玩家听到了完整答复"])
-	for reflection in people[id].reflections:
+	assert(status in ["正在向玩家播放，尚未完整说完","已向玩家播放完成；未投递给其他成员","已播放完成；附近成员听闻另行记录","已用文字呈现；未生成语音","播放失败，不能确认玩家听到了完整答复"])
+	for index in people[id].reflections.size():
+		var reflection: Dictionary=people[id].reflections[index]
 		if reflection.event_id == event_id:
-			reflection.public_reply_status = status
-			memory.put(id,"reflection",event_id,reflection,0.4)
+			var updated: Dictionary=reflection.duplicate(true)
+			updated.public_reply_status = status
+			var key: String=memory.put(id,"reflection",event_id,updated,0.4)
+			people[id].reflections[index]=memory.records[id][key].data
 			return
 	assert(false,"播放事件找不到对应的人物答复："+event_id)
+
+func waiting_stop_succeeded(result: Dictionary) -> bool:
+	var task: Dictionary=working_tasks.get(result.person_id,{})
+	return result.get("intent")=="rest" and result.get("success",false) and task.get("action_event_id","")==str(result.source_event_id) and task.get("state")=="wait" and task.get("handling",{}).get("state")=="wait"
 
 func record_execution(result: Dictionary) -> void:
 	var person: Dictionary=people[result.person_id]
@@ -194,19 +222,35 @@ func record_execution(result: Dictionary) -> void:
 		preload("res://scripts/skills/egocentric_space.gd").sanitize_event(outcome)
 		working_tasks[result.person_id]["last_result"]=outcome.result
 		working_tasks[result.person_id].progress.append(outcome.result.duplicate(true))
-		if working_tasks[result.person_id].get("state")!="cancelled":
+		if working_tasks[result.person_id].get("state")!="cancelled" and not waiting_stop_succeeded(result):
 			working_tasks[result.person_id].state="awaiting_judgement"
 	# 本人刚做过的动作属于当天经历；自主行动也不能只存入需要检索的长期记录。
 	var feedback:={"id":str(result.source_event_id)+"/execution/"+str(result.get("skill_ref",result.get("intent","action"))),"kind":"skill_execution","speaker":"world","text":str(result.get("message","动作结果")),"result":record.duplicate(true)}
 	preload("res://scripts/skills/egocentric_space.gd").sanitize_event(feedback)
 	hear(result.person_id,feedback)
-	person.execution_results.append(record)
-	memory.put(result.person_id,"action",str(result.source_event_id)+"/"+str(result.get("skill_ref",result.get("intent","action"))),record,0.5)
+	var key: String=memory.put(result.person_id,"action",str(result.source_event_id)+"/"+str(result.get("skill_ref",result.get("intent","action"))),record,0.5)
+	person.execution_results.append(memory.records[result.person_id][key].data)
 
 func execution_evidence(id: String, ref: String) -> Array:
 	# 修订读取本人该版本的真实执行记录，包含尚未日终整理的短期动作。
 	# 不能用只检索长期记忆的recall代替，否则刚发生的失败会被漏掉。
 	return people[id].execution_results.filter(func(record):return record.get("skill_ref","")==ref).slice(-4).duplicate(true)
+
+func skill_execution_context(id: String, event_id: String) -> Dictionary:
+	var task: Dictionary=working_tasks.get(id,{})
+	var journal=preload("res://scripts/skills/execution_journal.gd")
+	if not independent_actions.has(id+"/"+event_id) and task.get("action_event_id","")==event_id:
+		return journal.context(id,task.request.id,task.get("progress",[]))
+	return journal.context(id,event_id,[])
+
+func skill_execution_origin(id: String, event_id: String, current: Transform3D) -> Transform3D:
+	var task: Dictionary=working_tasks.get(id,{})
+	if not independent_actions.has(id+"/"+event_id) and task.get("action_event_id","")==event_id:
+		var created:=not task.has("execution_origin")
+		var origin:=preload("res://scripts/skills/execution_journal.gd").request_origin(task,current)
+		if created:memory.dirty=true
+		return origin
+	return current
 
 func save_snapshot(path: String) -> Error:
 	var memory_error: String=memory.save()
@@ -224,8 +268,34 @@ func event_for(id: String, event_id: String) -> Dictionary:
 	return {}
 
 func refresh_memory_views() -> void:
+	_poll_retired_history()
+	var retired: Array=[]
+	var previous: Array=[]
 	for id in people:
-		people[id].heard_events=memory.retained(id,"heard")
-		people[id].reflections=memory.retained(id,"reflection")
-		people[id].execution_results=memory.retained(id,"action")
-		people[id].skill_knowledge=memory.retained(id,"skill")
+		for field in HISTORY_KINDS:
+			previous=people[id][field]
+			# 外层列表独立复制；不能清空已被调用者捕获的旧视图。
+			if not previous.is_empty():retired.append(previous.duplicate())
+			people[id][field]=memory.retained_view(id,HISTORY_KINDS[field])
+	previous=[]
+	if not retired.is_empty():
+		# 先替换全部主线程引用，再由工作线程释放弃用正文；任务收束时只剩空列表。
+		_retired_history_tasks.append(WorkerThreadPool.add_task(func():
+			for old_values in retired:old_values.clear()
+			retired.clear()))
+
+func _poll_retired_history() -> void:
+	for task in _retired_history_tasks.duplicate():
+		if not WorkerThreadPool.is_task_completed(task):continue
+		WorkerThreadPool.wait_for_task_completion(task)
+		_retired_history_tasks.erase(task)
+
+func flush_retired_history() -> void:
+	for task in _retired_history_tasks:WorkerThreadPool.wait_for_task_completion(task)
+	_retired_history_tasks.clear()
+
+func _notification(what: int) -> void:
+	if what==NOTIFICATION_PREDELETE:
+		# PREDELETE 时对象 ID 已失效，直接收束，不能再次经实例方法分派。
+		for task in _retired_history_tasks:WorkerThreadPool.wait_for_task_completion(task)
+		_retired_history_tasks.clear()

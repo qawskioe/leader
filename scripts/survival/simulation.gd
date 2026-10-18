@@ -59,6 +59,7 @@ func _ready() -> void:
 	supplies.name="SurvivalFood"
 	scene.add_child(supplies)
 	storage_visual=_station(STORAGE,Color(0.36,0.23,0.12),"Storage")
+	storage_visual.set_meta("display_name","储食处")
 	var storage_body:=StaticBody3D.new();storage_visual.add_child(storage_body)
 	content_interaction.register_container("storage",{"root":storage_visual,"body":storage_body,"holder":"","contents":storage_contents},Vector3(0,0.4,0),_refresh_visuals)
 	for index in 3:
@@ -69,6 +70,9 @@ func _ready() -> void:
 	gathering.sim=self
 	add_child(gathering)
 	water=Water.new(); water.sim=self; add_child(water)
+	for id in actors:
+		life_world.register_subject(id,actors[id].body,_resource_needs.bind(id),_resource_visible.bind(id),_resource_event.bind(id),_resource_sync.bind(id))
+	life_world.register_subject("player",scene.get_node("Player"),_resource_needs.bind("player"),_resource_visible.bind("player"),_resource_event.bind("player"),_resource_sync.bind("player"))
 	handover=preload("res://scripts/survival/handover.gd").new();handover.sim=self;add_child(handover)
 	for id in actors: store.people[id].needs["thirst"]=35.0
 	await get_tree().physics_frame
@@ -76,6 +80,21 @@ func _ready() -> void:
 	ready_for_actions=true
 	perception.seed_arrival(actors.keys())
 	for id in actors: _sync(id)
+
+func _resource_needs(id: String) -> Dictionary:
+	# 每次取当前字典，存档恢复替换人物数据后不能继续修改旧实例。
+	return water.player_needs if id=="player" else store.people[id].needs
+
+func _resource_visible(source: String, at: Vector3, id: String) -> bool:
+	if id=="player":return gathering._reachable(id,at,2.6)
+	var target: RID=content_interaction.containers[source].record.body.get_rid() if content_interaction.containers.has(source) else RID()
+	return not perception.known(id,source).is_empty() and perception.sees(id,at,target)
+
+func _resource_event(id: String) -> String:
+	return actors[id].event_id if actors.has(id) else "player_action_%d"%Time.get_ticks_usec()
+
+func _resource_sync(id: String) -> void:
+	if actors.has(id):_sync(id)
 
 func observation(id: String) -> Dictionary:
 	var storage:=perception.known(id,"storage")
@@ -92,6 +111,8 @@ func observation(id: String) -> Dictionary:
 
 func _physics_process(delta: float) -> void:
 	if not ready_for_actions or not enabled: return
+	var save_error: String=store.memory.poll_save()
+	if not save_error.is_empty():push_error(save_error)
 	_clock+=delta
 	store.memory.advance(delta)
 	perception.clock=store.memory.clock
@@ -104,7 +125,7 @@ func _physics_process(delta: float) -> void:
 			for entry in store.memory.retained(id,"landmark"): retained[entry.id]=true
 			for key in perception.memories.get(id,{}).keys():
 				if not perception.memories[id][key].visible_now and not retained.has(key) and not store.memory.observations[id].has(key): perception.memories[id].erase(key)
-		var memory_error: String=store.memory.save()
+		var memory_error: String=store.memory.request_save()
 		if memory_error!="": push_error(memory_error)
 	_sense_clock+=delta
 	if _sense_clock>=0.2:
@@ -129,6 +150,7 @@ func _physics_process(delta: float) -> void:
 				body.global_transform=before_motion;body.velocity=Vector3.ZERO
 				_finish_skill_motion(id,false,"持物移动受阻",checked)
 		GroundMotion.move(body,delta)
+		if actor.stage=="skill_moving":_remember_motion_contacts(actor)
 		if actor.has("motion_guard"):
 			var checked: Dictionary=actor.motion_guard.call(before_motion,body.global_transform)
 			if not checked.ok:
@@ -150,9 +172,9 @@ func _walk(id: String, delta: float) -> void:
 	var target: Vector3=actor.path[actor.step]
 	var direction:=target-body.global_position
 	direction.y=0
-	# 技能已在目的地预留站位距离；再提前0.2米结束会使近距离抓握够不到。
-	var arrival_tolerance:=0.01 if actor.get("keep_motion_heading",false) else (0.04 if actor.stage=="skill_moving" else 0.20)
-	if direction.length()<arrival_tolerance:
+	assert(actor.has("motion_stop_distance"),"运动入口必须提供到所选目标的停止距离")
+	var arrival_tolerance:=maxf(float(actor.motion_stop_distance),0.04)
+	if direction.length()<=arrival_tolerance+0.001:
 		actor.step+=1
 		if actor.step>=actor.path.size():
 			_finish_skill_motion(id,true,"已到达本次选择的地面点附近")
@@ -162,23 +184,29 @@ func _walk(id: String, delta: float) -> void:
 	if actor.stalled>5:
 		_finish_skill_motion(id,false,"路线被挡住，未能到达所选目标")
 		return
-	# 精细站位必须真正到点；末帧减速避免固定步长越过目标后反复折返。
-	var speed:=minf(move_speed,direction.length()/maxf(delta,.0001))
+	# 最后一帧只走到停止范围，避免越过目标后反复折返。
+	var speed:=minf(move_speed,(direction.length()-arrival_tolerance)/maxf(delta,.0001))
 	direction=direction.normalized()
 	body.velocity.x=direction.x*speed
 	body.velocity.z=direction.z*speed
 	if not actor.get("keep_motion_heading",false):body.rotation.y=lerp_angle(body.rotation.y,atan2(direction.x,direction.z),minf(delta*8,1))
 
+func _remember_motion_contacts(actor: Dictionary) -> void:
+	var contacts: Array=[]
+	for index in actor.body.get_slide_collision_count():
+		var collision: KinematicCollision3D=actor.body.get_slide_collision(index)
+		if absf(collision.get_normal().y)>=GroundMotion.MIN_FLOOR_Y:continue
+		contacts.append({"position":collision.get_position(),"normal":collision.get_normal()})
+		if contacts.size()==4:break
+	# 停止前的一帧可能只有脚下地面；保留本段最近一次真实阻挡面，而不是丢掉它。
+	if not contacts.is_empty():actor["motion_contacts"]=contacts
+
 func _finish_skill_motion(id: String, success: bool, message: String, details: Dictionary={}) -> void:
 	var actor: Dictionary=actors[id]
-	var contacts: Array=[]
-	if not success:
-		for index in actor.body.get_slide_collision_count():
-			var collision: KinematicCollision3D=actor.body.get_slide_collision(index)
-			if absf(collision.get_normal().y)>=GroundMotion.MIN_FLOOR_Y: continue
-			contacts.append({"position":collision.get_position(),"normal":collision.get_normal()})
-			if contacts.size()==4: break
-	actor.erase("motion_guard");actor.erase("keep_motion_heading")
+	if not success:_remember_motion_contacts(actor)
+	var contacts: Array=actor.get("motion_contacts",[]).duplicate(true) if not success else []
+	actor.erase("motion_contacts")
+	actor.erase("motion_guard");actor.erase("keep_motion_heading");actor.erase("motion_stop_distance")
 	actor.stage="skill_wait";actor.path=PackedVector3Array();actor.body.velocity=Vector3.ZERO
 	# 行走停下不应先reset_bone_poses；让动画混合保留当前身体姿态。
 	# 下一段技能可以接管此过渡中的姿态，整项技能结束仍由宿主连续回位。

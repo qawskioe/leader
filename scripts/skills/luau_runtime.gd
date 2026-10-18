@@ -16,7 +16,7 @@ func is_starting() -> bool:
 	return running and _sequence==0
 
 func run(source: String, arguments: Dictionary, context: Dictionary, adapter: Node, capabilities: Array) -> Dictionary:
-	assert(not running)
+	assert(not running and _pending_operations==0)
 	api=adapter
 	var acquired: Dictionary=api.acquire()
 	if not acquired.ok: return {"status":"error","code":acquired.code}
@@ -25,7 +25,9 @@ func run(source: String, arguments: Dictionary, context: Dictionary, adapter: No
 	running=true;trace.clear();_generation+=1;_sequence=0;_started_ms=Time.get_ticks_msec()
 	invocation="call_%d_%d"%[get_instance_id(),Time.get_ticks_usec()]
 	service.message_received.connect(_message)
-	service.send({"op":"start","id":invocation,"source":source,"arguments":arguments,"context":context,"capabilities":capabilities})
+	error=service.send({"op":"start","id":invocation,"source":source,"arguments":arguments,"context":context,"capabilities":capabilities})
+	# 未发送的start可能同步失败；直接返回清理结果，不能先emit再等待同一个信号。
+	if error!="":return await _complete({"status":"error","code":error,"trace":trace.duplicate(true)})
 	return await finished
 
 func _message(event: Dictionary) -> void:
@@ -41,20 +43,28 @@ func _execute(event: Dictionary, generation: int) -> void:
 	_pending_operations+=1
 	var started:=Time.get_ticks_msec()
 	var result: Dictionary=await api.request(event.request.operation,event.request.arguments)
+	# 取消/失败只结束Lua续跑；正在排空的世界请求仍可能返回已结算的真实结果。
+	# drained会同步唤醒_complete，必须先存回执，不能让下一次调用丢失实际进展。
+	if generation==_generation or (not running and generation+1==_generation):
+		trace.append({"operation":event.request.operation,"arguments":event.request.arguments,"result":result,"elapsed_ms":Time.get_ticks_msec()-started})
 	_pending_operations-=1
 	if _pending_operations==0: operations_drained.emit()
 	if not running or generation!=_generation: return
-	trace.append({"operation":event.request.operation,"arguments":event.request.arguments,"result":result,"elapsed_ms":Time.get_ticks_msec()-started})
-	service.send({"op":"resume","id":invocation,"sequence":event.sequence,"result":result})
+	var error: String=service.send({"op":"resume","id":invocation,"sequence":event.sequence,"result":result})
+	if error!="":
+		# 世界操作已经发生；结束原生等待协程并保留真实轨迹，不回滚或重放，也不中止其他调用。
+		service.send({"op":"cancel","id":invocation})
+		_complete({"status":"error","code":error,"trace":trace.duplicate(true)})
 
-func _complete(result: Dictionary) -> void:
-	if not running: return
+func _complete(result: Dictionary) -> Dictionary:
+	if not running: return {}
 	running=false;_generation+=1
 	service.message_received.disconnect(_message)
 	if result.get("status")!="completed":
 		api.cancel()
 		# 取消先让世界协程退出；否则控制器释放adapter时仍有伸手/移动协程挂起。
 		if _pending_operations>0: await operations_drained
+		result["trace"]=trace.duplicate(true)
 	else:
 		var cleanup: Variant=await api.finish()
 		if cleanup is Dictionary and cleanup.get("restored",false):
@@ -65,6 +75,7 @@ func _complete(result: Dictionary) -> void:
 	for step in trace:
 		result.operation_elapsed_ms[step.operation]=result.operation_elapsed_ms.get(step.operation,0)+step.get("elapsed_ms",0)
 	finished.emit(result)
+	return result
 
 func cancel() -> void:
 	if not running: return

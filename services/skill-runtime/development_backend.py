@@ -1,5 +1,5 @@
 """技能开发后端选择与任务交接；验收和发布仍属于游戏宿主。"""
-import json,os,re,subprocess,sys,time,threading,queue
+import json,os,re,subprocess,sys,time,threading,queue,errno
 from pathlib import Path,PureWindowsPath
 
 CODEX_WINDOWS_COMPANIONS=('codex-code-mode-host.exe','codex-command-runner.exe','codex-windows-sandbox-setup.exe')
@@ -29,9 +29,12 @@ def read_selection(root):
     if not isinstance(value,dict) or value.get('backend') not in ('disabled','opencode','codex'):
         raise ValueError('未知技能开发后端；当前支持disabled、opencode、codex')
     if value['backend']!='disabled':
-        if not {'backend','runtime','executable'}<=set(value) or set(value)-{'backend','runtime','executable','model'} or value['runtime'] not in ('local','wsl') or not isinstance(value['executable'],str) :
+        if not {'backend','runtime','executable'}<=set(value) or set(value)-{'backend','runtime','executable','model','windows_sandbox'} or value['runtime'] not in ('local','wsl') or not isinstance(value['executable'],str) :
             raise ValueError('执行器需要runtime(local/wsl)与可执行文件绝对路径')
         windows=PureWindowsPath(value['executable']).is_absolute()
+        if 'windows_sandbox' in value:
+            if value['backend']!='codex' or value['runtime']!='local' or not windows or value['windows_sandbox'] not in ('elevated','unelevated'):
+                raise ValueError('windows_sandbox仅支持Windows本机Codex的elevated或unelevated模式')
         if value['runtime']=='wsl' and not value['executable'].startswith('/'):
             raise ValueError('WSL执行器需要Linux绝对路径')
         if value['runtime']=='local' and not (windows or value['executable'].startswith('/')):
@@ -61,7 +64,7 @@ def ensure_available(selection):
 
 def model_config(root,selection):
     if selection['backend']=='codex':
-        return {'protocol':'codex_cli','model':selection.get('model','gpt-6-astra'),'executable':selection['executable'],'reasoning_effort':'high','total_timeout_seconds':180}
+        return {'protocol':'codex_cli','model':selection.get('model','gpt-6-astra'),'executable':selection['executable'],'windows_sandbox':selection.get('windows_sandbox','elevated'),'reasoning_effort':'high','total_timeout_seconds':180}
     if selection['backend']=='disabled':raise ValueError('动态技能开发已关闭')
     path=root/'services/skill-runtime/runtime/builder_provider.json'
     if not path.exists():path=root/'services/text-gateway/runtime/text_model.json'
@@ -86,6 +89,13 @@ def linux_path(path):
     if re.match(r'^[A-Za-z]:/',value):return '/mnt/'+value[0].lower()+value[2:]
     if value.startswith('/'):return value
     raise ValueError('无法转换WSL路径')
+
+
+def close_stdin(process):
+    try:process.stdin.close()
+    except OSError as error:
+        # Windows已退出的接收端可能在关闭时刷新失败；不覆盖取消/退出结果。
+        if process.poll() is None or error.errno not in (errno.EPIPE,errno.EINVAL):raise
 
 
 def run(workspace,config,deadline,verify,status,cancelled,folder,selection):
@@ -120,9 +130,15 @@ def run(workspace,config,deadline,verify,status,cancelled,folder,selection):
             kind=event.get('kind')
             if kind=='progress':status(event['value'])
             elif kind=='verify':
-                try:value=verify()
+                mode=event.get('mode')
+                try:
+                    if mode not in ('inspect','run'):raise ValueError('验证mode必须是inspect或run')
+                    value=verify(mode)
                 except (ValueError,KeyError,TypeError) as error:value={'ok':False,'error':str(error)}
+                if cancelled() or time.monotonic()>=deadline:return {'ok':False,'error':'技能开发已取消或超时，未发布候选'}
                 send({'kind':'verify_result','sequence':event['sequence'],'value':value})
+                if mode=='run' and value.get('owner')=='executor' and value.get('retryable') is False and not value.get('passed',False):
+                    return {'ok':False,'error':'宿主独立验证无法继续；执行记录已保留，停止技能编写，未发布候选'}
             elif kind=='result':result=event['value']
             elif kind=='error':return {'ok':False,'error':event['error']}
             else:return {'ok':False,'error':'未知开发后端通信事件'}
@@ -135,4 +151,4 @@ def run(workspace,config,deadline,verify,status,cancelled,folder,selection):
             except OSError:pass
             try:process.wait(timeout=20)
             except subprocess.TimeoutExpired:process.terminate();process.wait(timeout=5)
-        process.stdin.close();process.stdout.close();reader.join(timeout=1);log.close()
+        close_stdin(process);process.stdout.close();reader.join(timeout=1);log.close()

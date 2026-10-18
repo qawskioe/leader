@@ -15,7 +15,9 @@ class RoutingTests(unittest.TestCase):
 
     def test_routes_are_separate_and_request_cannot_override_provider(self):
         calls=[]
-        def complete(prompt,config=None):
+        def complete(prompt,config=None,prefix='',reference='',context_scope=''):
+            self.assertEqual((prefix,reference),('',''))
+            self.assertEqual(context_scope,'' if config else 'world')
             calls.append(config)
             return {'ok':True,'text':'{}'}
         with tempfile.TemporaryDirectory() as folder:
@@ -24,7 +26,7 @@ class RoutingTests(unittest.TestCase):
             (root/'runtime/memory_model.json').write_text(json.dumps({'model':'fast-fixture'}))
             with patch.object(run,'ROOT',root),patch.object(run,'complete',complete):
                 asyncio.run(run.decision(run.DecisionRequest(mode='memory',prompt='recall?'),'Bearer fixture'))
-                asyncio.run(run.decision(run.DecisionRequest(mode='decision',prompt='act?'),'Bearer fixture'))
+                asyncio.run(run.decision(run.DecisionRequest(mode='decision',prompt='act?',context_scope='world'),'Bearer fixture'))
                 self.assertEqual(calls,[{'model':'fast-fixture'},None])
                 (root/'runtime/memory_model.json').unlink()
                 result=asyncio.run(run.decision(run.DecisionRequest(mode='memory',prompt='recall?'),'Bearer fixture'))

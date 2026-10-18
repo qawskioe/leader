@@ -101,12 +101,16 @@ func refresh() -> void:
 	# 空闲时不把持久化的旧结果当成本次行动的原因；经历在“最近做过什么”中带时间展示。
 	if caption!=null and person_id in controller._speech_order and not controller._reports_received.has(person_id): why="正在考虑："+caption.turn_heading.text
 	var lines: PackedStringArray=[person.name+" · "+identity.former_work,"", "现在",brief(person,actor,sim),"饥饿：%.0f / 100；口渴：%.0f / 100"%[person.needs.hunger,person.needs.get("thirst",0)]]
-	if actor.stage=="skill_learning": why=person.get("learning",{}).get("message","正在学习")
+	if actor.stage=="skill_learning":
+		var study: Dictionary=person.get("learning",{})
+		var original: String=study.get("request_text","")
+		why="收到的要求："+original if not original.is_empty() else "想学会："+str(study.get("goal",""))
 	if actor.stage=="skill_body": why="正在按技能编写的姿态与接触目标控制骨骼。"
 	lines.append("\n当前事情的来由\n"+why)
 	var learning: Dictionary=person.get("learning",{})
 	if not learning.is_empty():
-		lines.append("\n最近的学习结果\n"+str(learning.get("message","")))
+		lines.append("\n最近的学习情况\n"+str(learning.get("message","")))
+		if not str(learning.get("goal","")).is_empty():lines.append("要学会："+str(learning.goal))
 		for issue in learning.get("review",{}).get("issues",[]):
 			if issue is Dictionary:
 				lines.append("审查指出（%.2f 秒）：%s\n建议：%s"%[float(issue.get("time_ms",0))/1000.0,str(issue.get("problem","")),str(issue.get("suggestion",""))])
@@ -188,7 +192,7 @@ func refresh() -> void:
 func _format_page(text: String) -> String:
 	var rows:=text.split("\n")
 	var result:=PackedStringArray()
-	var headings:=["已掌握的可执行技能","现在","当前事情的来由","过去的职业与专长","重要情报","最近的实际经历","眼下的期待","接下的帮助","最近听到了什么"]
+	var headings:=["已掌握的可执行技能","现在","当前事情的来由","最近的学习情况","过去的职业与专长","重要情报","最近的实际经历","眼下的期待","接下的帮助","最近听到了什么"]
 	for i in rows.size():
 		var escaped: String=rows[i].replace("[","[lb]")
 		if i==0: result.append("[font_size=25]"+escaped+"[/font_size]")

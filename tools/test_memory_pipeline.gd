@@ -3,8 +3,10 @@ class FakeGateway extends Node:
 	var prompts: Array=[]
 	var modes: Array=[]
 	var replies: Array=[]
+	var packets: Array=[]
 	func exchange(payload: Dictionary) -> Dictionary:
-		prompts.append(payload.prompt);modes.append(payload.mode)
+		packets.append(payload.duplicate(true))
+		prompts.append(payload.prefix+"\n"+payload.reference+"\n"+payload.prompt);modes.append(payload.mode)
 		await get_tree().process_frame
 		return {"ok":true,"text":JSON.stringify(replies.pop_front()),"model":"fixture","elapsed_ms":1,"usage":{}}
 func _initialize() -> void: run.call_deferred()
@@ -22,6 +24,7 @@ func run() -> void:
 	pipeline.run({"id":"now","speaker":"player","kind":"speech_intent","text":"大山，之前那个东西放在哪里？","listeners":["person_003"]},{})
 	await pipeline.completed
 	assert(gateway.prompts.size()==2)
+	assert(gateway.packets[0].prefix==gateway.packets[1].prefix and gateway.packets[0].reference==gateway.packets[1].reference,"检索续轮只能增加动态后缀")
 	for prompt in gateway.prompts:
 		assert(not prompt.contains("不知道别人的私下想法") and not prompt.contains("不要再输出ready") and not prompt.contains("修订后只有原话要求演示"),"实际网关请求也应使用新提示")
 	assert(not gateway.prompts[0].contains("独特记忆") and not gateway.prompts[0].contains("他人的独特私密想法"),"默认输入不注入历史或他人隐私")
@@ -51,5 +54,22 @@ func run() -> void:
 	pipeline.run({"id":"bounded","speaker":"player","kind":"speech_intent","text":"继续找旧记忆","listeners":["person_003"]},{})
 	await pipeline.completed
 	assert(gateway.modes.size()==3 and reports[0].has("error") and not reports[0].has("decision"))
+	var scope: String=gateway.packets[0].context_scope
+	for packet in gateway.packets:
+		assert(packet.context_scope==scope,"普通轮次及检索不能改变世界缓存域")
+		assert(not packet.prompt.contains(scope) and not packet.prefix.contains(scope),"缓存域不进入人物模型资料")
+	pipeline.reset_context_cache()
+	assert(pipeline.context_cache_scope()!=scope,"恢复世界必须更换缓存域")
+	gateway.replies=[final_decision]
+	pipeline.run({"id":"restored_scope","speaker":"player","kind":"speech_intent","text":"大山，继续回答","listeners":["person_003"]},{})
+	await pipeline.completed
+	assert(gateway.packets[-1].context_scope!=scope,"新的缓存域必须实际传到网关")
+	var restored_scope: String=pipeline.context_cache_scope()
+	store.memory.consolidate("rest")
+	assert(pipeline.context_cache_scope()!=restored_scope,"近期经历转入长期检索时也必须撤掉旧传输基准")
+	gateway.replies=[final_decision]
+	pipeline.run({"id":"consolidated_scope","speaker":"player","kind":"speech_intent","text":"大山，先休息一下","listeners":["person_003"]},{})
+	await pipeline.completed
+	assert(gateway.packets[-1].context_scope!=restored_scope)
 	print("MEMORY_PIPELINE_PASSED model_initiated_recall_no_default_history_no_other_private_data")
 	quit()

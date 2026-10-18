@@ -7,7 +7,8 @@ from opencode_host import Host
 PROMPT='''你扮演reference/context中的人物，为自己开发Luau技能。Godot是世界，不能修改世界规则或编造知识、材料、结果。玩家原话优先于摘要。
 这是游戏管理的独立技能工程。用已有文件/搜索/补丁/终端工具读取reference/task.json、reference/sdk.md、reference/principles.md、source.luau、skill.json，再按需读取本人资料、已掌握固定依赖和上次失败反馈。previous_failure、evidence、feedback与context大记录提供摘要和evidence_file目录；trace按navigation/body/holding/resources/handover分类，并保留原步骤号。先选与失败阶段有关的类别，再读取具体步骤；需要前置观察时按步骤号回查。不得递归全读目录，不要假设记忆是实时事实。
 仅修改source.luau与skill.json。source返回function(args,context)；skill.json包含name、description、parameters、parameter_kinds、capabilities、dependencies、test_arguments，不含source。保持修订的参数合同；新技能可自行设计。声明能力和依赖必须在本人已知范围内。
-Git用于检查差异；宿主为每个受检版本提交，.git只读。调用world_verify_skill做真实隔离回放，读取反馈后可继续修订。若问题属于宿主执行器且不能在技能层合理修正，报告问题，不能篡改验收或规避物理。最多三次验证。通过后结束，不再改动文件。你的最终回复不能代替验收。
+Git用于检查差异；宿主为每个受检版本提交，.git只读。使用world verify_skill的inspect模式查看当前计划与剩余预算，run模式做真实隔离回放；整组共享预算，读取反馈后可继续修订。若问题属于宿主执行器且不能在技能层合理修正，报告问题，不能篡改验收或规避物理。最多三次验证。通过后结束，不再改动文件。你的最终回复不能代替验收。
+需要覆盖空库存、受方不在可达范围及连续续办等分支时，按reference/sdk.md在skill.json配置verification_cases；不通过候选代码修改世界或用源码存在分支代替回放证据。
 工作区只含本人可知资料，世界快照、验收器和凭据不在此处。现有技能、失败记录与无损记忆引用都可按需读取。'''
 
 _STOP=threading.Event()
@@ -37,9 +38,9 @@ def execute(folder):
     if not config.exists():config=root/'services/text-gateway/runtime/text_model.json'
     provider=json.loads(config.read_text(encoding='utf-8'));provider['model']=request['model']
     sequence=[0]
-    def verify():
+    def verify(mode):
         sequence[0]+=1;number=sequence[0]
-        emit('verify',sequence=number)
+        emit('verify',sequence=number,mode=mode)
         while time.monotonic()<deadline and not cancelled():
             with _CONDITION:
                 if number in _REPLIES:return _REPLIES.pop(number)
@@ -60,7 +61,8 @@ def execute(folder):
                 last=assistant[-1];info=last['info'];parts=last.get('parts',[])
                 tools=[p for p in parts if p.get('type')=='tool']
                 detail=tools[-1]['tool'] if tools else '思考'
-                progress={'state':'testing' if detail=='world_verify_skill' else 'writing','model':provider['model'],'message':'OpenCode：'+detail}
+                testing=detail=='world_verify_skill' and tools[-1].get('state',{}).get('input',{}).get('mode')=='run'
+                progress={'state':'testing' if testing else 'writing','model':provider['model'],'message':'OpenCode：'+detail}
                 if progress!=last_progress:emit('progress',value=progress);last_progress=progress
                 if info.get('error'):return {'ok':False,'error':'OpenCode模型调用失败：'+str(info['error'])[:400]}
                 if info.get('time',{}).get('completed') and info.get('finish') not in (None,'tool-calls'):

@@ -7,7 +7,16 @@ var _frame_leases: Dictionary={}
 var recalled_entries: Dictionary={}
 var world_facts: Array=[]
 var starting_frame: Transform3D
+var request_frame: Transform3D
+var request_id:=""
+var _request_origin_bound:=false
 const Spatial=preload("res://scripts/skills/spatial_target.gd")
+const InteractionRange=preload("res://scripts/skills/interaction_range.gd")
+
+func bind_request_origin(id: String, frame: Transform3D) -> void:
+	assert(not _owned and not id.is_empty(),"请求坐标系须在执行前由宿主绑定")
+	request_id=id;request_frame=frame
+	_request_origin_bound=true
 
 func retain_observation(token: String) -> void:
 	if _frame_leases.has(token):return
@@ -19,6 +28,25 @@ func _exit_tree() -> void:
 	for token in _frame_leases:sim.space.release_frame(token)
 	_frame_leases.clear()
 
+func argument_motion_frames(trace: Array) -> Dictionary:
+	# 日常模型可直接选旧观察里的地面，技能trace中未必再次perceive。
+	# 只导出该次实际移动用到的已租用坐标帧，不补造旧near/known内容。
+	var queried: Dictionary={}
+	for step in trace:
+		if step.operation in ["perceive","walk_options"] and step.result.get("observation_id") is String:
+			queried[step.result.observation_id]=true
+	var frames: Dictionary={}
+	for step in trace:
+		if step.operation!="approach" or not step.arguments.get("object") is Dictionary:continue
+		var token: Variant=step.arguments.object.get("observation_id")
+		if not token is String or queried.has(token) or not _frame_leases.has(token):continue
+		assert(sim.space.frames.has(token) and sim.space.frames[token].person==person_id,"租用观察必须仍归属于本人")
+		var frame: Transform3D=sim.space.frames[token].transform
+		var local: Transform3D=starting_frame.affine_inverse()*frame
+		var ongoing: Transform3D=request_frame.affine_inverse()*frame
+		frames[token]={"odometry":{"position":sim.space.xyz(local.origin),"right":sim.space.xyz(local.basis.x),"forward":sim.space.xyz(local.basis.z),"meaning":"所选原观察帧在本次技能起点坐标系内的位置与朝向，不是新观察或世界坐标。"},"request_odometry":{"request_id":request_id,"position":sim.space.xyz(ongoing.origin),"right":sim.space.xyz(ongoing.basis.x),"forward":sim.space.xyz(ongoing.basis.z),"meaning":"所选原观察帧在当前请求起点坐标系内的位置与朝向，不包含旧视野内容。"}}
+	return frames
+
 func acquire() -> Dictionary:
 	var result: Dictionary=super.acquire()
 	if result.ok:
@@ -26,7 +54,13 @@ func acquire() -> Dictionary:
 		if observation_id.is_empty(): observation_id=sim.space.capture(person_id).id
 		retain_observation(observation_id)
 		starting_frame=sim.space.frames[observation_id].transform
+		if not _request_origin_bound:bind_fresh_request_origin()
 	return result
+
+func bind_fresh_request_origin() -> void:
+	# 直接接口夹具没有任务；每次独立执行仍有自己的起点，不能借用其他请求历史。
+	var current: Dictionary=sim.space.capture(person_id)
+	request_id="invocation/"+current.id;request_frame=sim.space.frames[current.id].transform
 
 func _record_fact(event: Dictionary) -> void:
 	if event.person_id==person_id:world_facts.append(event.duplicate(true))
@@ -57,22 +91,19 @@ func request(operation: String, args: Dictionary) -> Dictionary:
 			var seen: Dictionary=await request("perceive",{})
 			var body: CharacterBody3D=sim.actors[person_id].body
 			var frame: Transform3D=sim.space.frames[seen.observation_id].transform
+			var slice_start:=Time.get_ticks_usec()
 			for sample in seen.near.ground_samples:
 				if sample.state!="visible_surface":continue
 				var p: Dictionary=sample.position
 				var target: Vector3=frame*Vector3(p.x,p.y,p.z)
-				var parameters:=PhysicsTestMotionParameters3D.new()
-				parameters.from=body.global_transform;parameters.from.origin+=Vector3.UP*0.04
-				parameters.motion=target-body.global_position
-				parameters.margin=0.005
-				var collision:=PhysicsTestMotionResult3D.new()
-				var hit:=PhysicsServer3D.body_test_motion(body.get_rid(),parameters,collision)
-				var wall:=false
-				if hit:
-					for index in collision.get_collision_count():
-						if collision.get_collision_normal(index).y<0.7:wall=true
-				sample["path_clear"]=not wall
-				sample["path_blocker"]="body" if wall else ""
+				var clear:=preload("res://scripts/survival/ground_motion.gd").path_clear(body,target)
+				sample["path_clear"]=clear
+				sample["path_blocker"]="body" if not clear else ""
+				# 身体贴地预判比单次扫掠贵，按帧让出执行，不能卡住录音和VR输入。
+				if Time.get_ticks_usec()-slice_start>=2000:
+					await get_tree().physics_frame
+					if not _owned:return _result(false,"cancelled")
+					slice_start=Time.get_ticks_usec()
 			seen["path_meaning"]="仅检查本人身体直达可见采样点的路径；固定携带不做逐帧外形绕障。受阻不代表其他路线不存在。"
 			return seen
 		"consume_contents":
@@ -98,7 +129,8 @@ func request(operation: String, args: Dictionary) -> Dictionary:
 				if not known.has(key):known[key]=sim.space.recalled_landmark(person_id,recalled_entries[key],observation_id)
 			var unit: Dictionary=sim.life_world.held_unit(person_id)
 			var current: Transform3D=starting_frame.affine_inverse()*sim.space.frames[observation_id].transform
-			return {"ok":true,"odometry":{"meaning":"本次技能开始时本人脚底坐标系内的自身移动与朝向；不是世界坐标","position":sim.space.xyz(current.origin),"right":sim.space.xyz(current.basis.x),"forward":sim.space.xyz(current.basis.z)},"observation_id":observation_id,"near":seen.near_field,"known":known,"available_hands":{"Hand.L":sim.water.free_hand(person_id,"Hand.L"),"Hand.R":sim.water.free_hand(person_id,"Hand.R")},"held_unit":{} if unit.is_empty() else {"material":unit.get("material","food"),"hand":unit.get("hand","Hand.R")},"needs":sim.store.people[person_id].needs.duplicate(true)}
+			var ongoing: Transform3D=request_frame.affine_inverse()*sim.space.frames[observation_id].transform
+			return {"ok":true,"odometry":{"meaning":"本次技能开始时本人脚底坐标系内的自身移动与朝向；不是世界坐标","position":sim.space.xyz(current.origin),"right":sim.space.xyz(current.basis.x),"forward":sim.space.xyz(current.basis.z)},"request_odometry":{"request_id":request_id,"position":sim.space.xyz(ongoing.origin),"right":sim.space.xyz(ongoing.basis.x),"forward":sim.space.xyz(ongoing.basis.z),"meaning":"本人在当前请求起点坐标系内的自身位移与朝向，续办及存取保持同一原点；不能作为世界空间目标。"},"observation_id":observation_id,"near":seen.near_field,"known":known,"available_hands":{"Hand.L":sim.water.free_hand(person_id,"Hand.L"),"Hand.R":sim.water.free_hand(person_id,"Hand.R")},"held_unit":{} if unit.is_empty() else {"material":unit.get("material","food"),"hand":unit.get("hand","Hand.R")},"needs":sim.store.people[person_id].needs.duplicate(true)}
 		"recall_locations":
 			if not args.get("kind") is String:return _result(false,"invalid_arguments")
 			var recalled: Dictionary={}
@@ -106,6 +138,7 @@ func request(operation: String, args: Dictionary) -> Dictionary:
 				if record.get("kind")!=args.kind:continue
 				var answer: Dictionary=sim.store.memory.recall(person_id,{"kind":"landmark","keywords":[str(record.id)],"limit":1})
 				if answer.ok:
+					sim.perception.recall_location(person_id,record)
 					recalled[record.id]=sim.space.recalled_landmark(person_id,record,observation_id)
 					recalled_entries[record.id]=record.duplicate(true)
 				if recalled.size()>=4:break
@@ -242,7 +275,9 @@ func look_toward(target: Variant) -> Dictionary:
 	sim.perception.observe(person_id)
 	return _result(true,"looked_toward")
 
-func approach_segment(args: Dictionary, keep_heading: bool=false) -> Dictionary:
+func approach_segment(args: Dictionary) -> Dictionary:
+	var keep_heading: Variant=args.get("keep_heading",false)
+	if not keep_heading is bool:return _result(false,"invalid_keep_heading","keep_heading必须是布尔值")
 	var value: Variant=args.get("object")
 	if not value is Dictionary or not Spatial.valid(value): return _result(false,"invalid_target")
 	var distance: Variant=args.get("distance",0.45)
@@ -254,9 +289,19 @@ func approach_segment(args: Dictionary, keep_heading: bool=false) -> Dictionary:
 	var body: CharacterBody3D=actor.body
 	var direction:=Vector3(target.x-body.global_position.x,0,target.z-body.global_position.z)
 	if direction.length()<=float(distance): return _segment_feedback(_result(true,"arrived"),value,target,body)
+	var outcome: Dictionary=await _walk_segment(target,float(distance),keep_heading)
+	return _segment_feedback(outcome,value,target,body)
+
+func _walk_segment(target: Vector3, distance: float, keep_heading: bool=false) -> Dictionary:
+	var actor: Dictionary=sim.actors[person_id]
+	var body: CharacterBody3D=actor.body
+	var direction:=Vector3(target.x-body.global_position.x,0,target.z-body.global_position.z)
 	# 一段直行是运动执行；不查询全地图、不替人物选择绕行点。
-	var destination:=target-direction.normalized()*float(distance)
-	actor.stage="skill_moving";actor.path=PackedVector3Array([destination]);actor.step=0;actor.elapsed=0.0;actor.stalled=0.0
+	# 目标是所选点周围的距离范围，不是初始方向上的一个厘米级固定站位。
+	# 碰撞滑动后从其他方向进入同一范围也应结束，不能到达后继续追逐旧站位。
+	actor.stage="skill_moving";actor.path=PackedVector3Array([target]);actor.step=0;actor.elapsed=0.0;actor.stalled=0.0
+	actor["motion_stop_distance"]=float(distance)
+	actor["motion_contacts"]=[]
 	actor.walk_limit=direction.length()/maxf(sim.move_speed,0.1)+5.0
 	actor["keep_motion_heading"]=keep_heading
 	_motion={};sim._animation(actor,"Walk")
@@ -265,16 +310,7 @@ func approach_segment(args: Dictionary, keep_heading: bool=false) -> Dictionary:
 		await get_tree().physics_frame
 	if not _owned: return _result(false,"cancelled")
 	if _motion.is_empty(): sim._finish_skill_motion(person_id,false,"选定的一段移动未能完成，请重新观察并选择下一段")
-	if keep_heading and _motion.get("ok",false):
-		# 局部接触规划按双脚落稳计算，不能在Walk→Idle混合未结束时锁住抬起的脚。
-		var settled:=0.0
-		while settled<sim.MOTION_STOP_BLEND_SECONDS:
-			await get_tree().process_frame
-			if not _owned:return _result(false,"cancelled")
-			if sim.enabled:settled+=get_process_delta_time()
-		await get_tree().process_frame
-		if not _owned:return _result(false,"cancelled")
-	return _segment_feedback(_motion,value,target,body)
+	return _motion
 
 func _segment_feedback(outcome: Dictionary, selected: Dictionary, target: Vector3, body: Node3D) -> Dictionary:
 	var result:=outcome.duplicate(true)
@@ -348,12 +384,38 @@ func move_held(args: Dictionary) -> Dictionary:
 	var record: Dictionary=objects.objects[id]
 	var destination: Transform3D=record.body.global_transform
 	destination.origin+=at+Vector3.UP*.015-objects.bottom(id)
+	var intersections: Array=objects.pose_intersections(id,destination)
+	var actor: CharacterBody3D=sim.actors[person_id].body
+	var adjusted:=false
+	if not intersections.is_empty() and intersections.all(func(hit):return hit.collider==actor):
+		# 人物选择落点，执行器根据双方外框留站位；只修正自身阻挡，仍通过正常碰撞运动。
+		var away:=Vector3(actor.global_position.x-at.x,0,actor.global_position.z-at.z)
+		if away.length()<0.01:away=-actor.global_basis.z
+		away=away.normalized()
+		var clearance: float=objects.horizontal_extent(actor,actor.global_transform,-away)+objects.horizontal_extent(record.body,destination,away)+objects.BODY_CLEARANCE_M
+		var standing:=Vector3(at.x+away.x*clearance,actor.global_position.y,at.z+away.z*clearance)
+		var ground_query:=PhysicsRayQueryParameters3D.create(standing+Vector3.UP*.3,standing-Vector3.UP*.3,1,[actor.get_rid(),record.body.get_rid()])
+		var support: Dictionary=sim.scene.get_world_3d().direct_space_state.intersect_ray(ground_query)
+		if support.is_empty() or support.normal.y<.8:return _result(false,"no_standing_support")
+		if (support.position+Vector3.UP*InteractionRange.HEIGHT_M).distance_to(at)>InteractionRange.RADIUS_M:return _result(false,"out_of_reach")
+		var moved: Dictionary=await _walk_segment(support.position,0.0,true)
+		if moved.code=="cancelled":return moved
+		if not moved.ok:return _result(false,"stance_blocked",str(moved.get("message","站位调整受阻")))
+		if objects.objects[id].holder!=person_id:return _result(false,"not_held")
+		var checked: Dictionary=resolve_surface(args.target)
+		if not checked.ok:return checked
+		at=placement_targets[Spatial.key(args.target)]
+		if not preload("res://scripts/skills/interaction_range.gd").reachable(actor,at):return _result(false,"out_of_reach")
+		objects.sync_held(id)
+		destination=record.body.global_transform
+		destination.origin+=at+Vector3.UP*.015-objects.bottom(id)
+		adjusted=true
 	var contacts: Array=objects.pose_contacts(id,destination)
 	if not contacts.is_empty():return {"ok":false,"code":"placement_blocked","contacts":objects.contact_kinds(contacts)}
 	record.attachment_frame="world"
 	record.attachment=func():return destination
 	objects.sync_held(id)
-	return {"ok":true,"code":"moved_to_surface","observation_id":observation_id,"bottom":local_point(objects.bottom(id)),"target":local_point(at)}
+	return {"ok":true,"code":"moved_to_surface","observation_id":observation_id,"bottom":local_point(objects.bottom(id)),"target":local_point(at),"stance_adjusted":adjusted}
 
 func _life_action_time(seconds: float) -> bool:
 	# 时间属于世界规则；暂停不推进，取消不消耗。等待后重新校验物资和目标。

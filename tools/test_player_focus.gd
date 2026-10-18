@@ -22,11 +22,11 @@ func run() -> void:
 	bridge.set_process(false);voice.add_child(bridge)
 	bridge.active=true
 	player._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
-	assert(Input.mouse_mode==Input.MOUSE_MODE_CAPTURED,"桥接的一次输入不被桌面焦点变化截断")
+	assert(Input.mouse_mode==Input.MOUSE_MODE_VISIBLE and bridge.virtual_mouse_mode==Input.MOUSE_MODE_CAPTURED,"桥接保持逻辑操作状态且不捕获真实鼠标")
 	bridge.active=false
 	player._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
-	assert(Input.mouse_mode==Input.MOUSE_MODE_VISIBLE,"桥接不活跃时仍按正常规则释放鼠标")
+	assert(Input.mouse_mode==Input.MOUSE_MODE_VISIBLE and bridge.virtual_mouse_mode==Input.MOUSE_MODE_CAPTURED,"桥接未执行时也不把真实焦点写回逻辑状态")
 	player._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
-	assert(Input.mouse_mode==Input.MOUSE_MODE_CAPTURED)
-	print("PLAYER_FOCUS_PASSED normal_release_restore_bridge_active_inactive; world_and_cloud_not_started")
+	assert(Input.mouse_mode==Input.MOUSE_MODE_VISIBLE and bridge.virtual_mouse_mode==Input.MOUSE_MODE_CAPTURED)
+	print("PLAYER_FOCUS_PASSED normal_release_restore_bridge_never_native_capture; world_and_cloud_not_started")
 	scene.queue_free();await process_frame;quit()

@@ -3,6 +3,7 @@ extends AudioStreamPlayer3D
 signal playback_started
 signal drained
 signal failed(message: String)
+const MAX_DISTANCE := 30.0
 var pending: Array[PackedVector2Array] = []
 var queued_frames := 0
 var received_frames := 0
@@ -21,7 +22,7 @@ func _ready() -> void:
 	stream = generator
 	position = Vector3(0,1.6,0)
 	unit_size = 6.0
-	max_distance = 30.0
+	max_distance = MAX_DISTANCE
 
 func push_chunk(event: Dictionary) -> void:
 	if complete:return

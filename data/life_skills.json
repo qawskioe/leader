@@ -19,10 +19,10 @@
   {
     "id": "go_to_known",
     "name": "按线索分段前往",
-    "description": "依照本人记忆与可见地面逐段前进；到旧位置不等于物品仍在那里。",
+    "description": "前往本人已知人物、物品或地标的位置。方法依照本人线索与可见地面连续分段行进、转向和绕行，受阻时返回现场结果。成功表示接近最后所知位置，下一步需观察确认目标；适合找人或前往水源等行程。",
     "parameters": {
-      "object": "本人已知目标ID",
-      "distance": "本方法需要的水平接近距离，单位米"
+      "object": "从本人位置线索复制完整目标ID，人物位置用person/人物ID，玩家位置用person/player",
+      "distance": "期望停在目标位置周围的水平距离，单位米，例如找人时1.5"
     },
     "capabilities": [
       "perceive",
@@ -35,7 +35,7 @@
     "parameter_kinds": {
       "distance": "number"
     },
-    "internal": true
+    "internal": false
   },
   {
     "id": "locate_resource",
@@ -112,6 +112,26 @@
       "perceive",
       "observe"
     ],
+    "internal": false
+  },
+  {
+    "id": "return_object",
+    "name": "取回并递交原物",
+    "description": "一次调用完成拿起指定原物、走近指定接收者、递交同一物品。已在本人手中则直接走近并递交；保留原物品和全部内容，不装填或食用。任一步受阻或被取消就停止，不换其他物品；接收者可拒绝，实际交付以世界回执为准。",
+    "parameters": {
+      "object": "本人已知的原物品完整ID；始终拿取并递交这一个物品",
+      "recipient": "本人已知接收者人物ID；归还玩家用player"
+    },
+    "parameter_kinds": {
+      "object": "text",
+      "recipient": "text"
+    },
+    "dependencies": {
+      "take": "take_object",
+      "go": "go_to_known",
+      "give": "give_object"
+    },
+    "capabilities": [],
     "internal": false
   },
   {

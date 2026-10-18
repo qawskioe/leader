@@ -4,6 +4,7 @@ const Sim=preload("res://scripts/survival/simulation.gd")
 const Hands=preload("res://scripts/vr/hand_interaction.gd")
 func _initialize() -> void: run.call_deferred()
 func run() -> void:
+	create_timer(35).timeout.connect(func():push_error("VR grab fixture timeout");quit(1))
 	var scene=load("res://scenes/initial_base.tscn").instantiate()
 	root.add_child(scene)
 	var store=Store.new()
@@ -26,8 +27,7 @@ func run() -> void:
 	hands.grab("right",fruit.mesh.global_position)
 	assert(sim.gathering.hands.has("player") and not fruit.available)
 	assert(not sim.gathering.harvest("player",key))
-	assert(hands.release("right",Vector3(1000,1000,1000)).begins_with("未放下"))
-	assert(sim.gathering.hands.has("player"))
+	# 空处松开和再次拿取另由test_vr_loose_food验证；这里继续验证真实装篮和递交。
 	await physics_frame
 	await physics_frame
 	assert(hands.release("right",basket.root.global_position+Vector3(0,0.25,0))=="已装篮")

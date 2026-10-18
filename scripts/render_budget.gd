@@ -79,10 +79,10 @@ func _apply_vr_tree_lods(outdoor: Node3D) -> void:
 		var tree := node as MeshInstance3D
 		var label := str(tree.name)
 		if label.begins_with("WoodlandTree_") or label.begins_with("GroveTree_"):
-			# 近处继续使用原网格，新增实例共享资源，仅在 10 m 内显示。
+			# VR 的近处也使用轻量网格；仅替换渲染，不改变树位和独立树干碰撞。
 			var close := MeshInstance3D.new()
 			close.name = "VRClose_" + label
-			close.mesh = tree.mesh
+			close.mesh = meshes.VRTree_Near
 			close.transform = tree.transform
 			close.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			close.visibility_range_end = close_range

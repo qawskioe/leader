@@ -13,6 +13,8 @@ var expected: Dictionary={}
 var active: Dictionary={}
 var max_dispatch_ms:=0.0
 const EXE="res://services/luau-runtime/runtime/build/leader-skill-service.exe"
+const TRANSPORT_CHUNK_BYTES:=1024
+const MAX_MESSAGE_BYTES:=1048576
 
 func start() -> String:
 	if process_id>0: return ""
@@ -23,14 +25,16 @@ func start() -> String:
 	worker.start(_io)
 	return ""
 
-func send(value: Dictionary) -> void:
+func send(value: Dictionary) -> String:
 	assert(process_id>0)
 	var bytes:=(JSON.stringify(value)+"\n").to_utf8_buffer()
-	assert(bytes.size()<=1048576,"技能通信超过上限")
+	# 外部上下文和世界回执有大小边界；拒绝前不登记调用，避免留下永远等不到的回执。
+	if bytes.size()>MAX_MESSAGE_BYTES:return "transport_message_too_large"
 	var id: String=value.get("id","")
 	if value.op=="start": active[id]=true
 	if value.op in ["start","resume","cancel"]: expected[id]=Time.get_ticks_msec()
 	lock.lock();outgoing.append(bytes);lock.unlock()
+	return ""
 
 func _io() -> void:
 	var stream: FileAccess=pipes.stdio
@@ -53,7 +57,8 @@ func _io() -> void:
 			sending=writes.pop_front();offset=0;chunk_sequence=0
 			sending_id=str(JSON.parse_string(sending.get_string_from_utf8()).get("id",""))
 		if not sending.is_empty() and not awaiting_ack:
-			var stop_at:=mini(offset+384,sending.size())
+			# Hex后每块约2KiB，仍逐块确认，不一次写入整个大观察包。
+			var stop_at:=mini(offset+TRANSPORT_CHUNK_BYTES,sending.size())
 			stream.store_string(JSON.stringify({"op":"transport_chunk","sequence":chunk_sequence,"hex":sending.slice(offset,stop_at).hex_encode(),"last":stop_at==sending.size()})+"\n")
 			offset=stop_at;awaiting_ack=true;progressed=true
 		if sending.is_empty() and Time.get_ticks_msec()-last_poll>500:

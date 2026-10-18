@@ -12,10 +12,12 @@ def failed_draft(folder, request):
         if previous==folder:continue
         try:
             if json.loads(status_file.read_text(encoding='utf-8')).get('state')!='failed':continue
-            old=json.loads((previous/'build_request.json').read_text(encoding='utf-8'))
-            if old.get('goal_id')!=request['goal_id'] or old.get('verification_snapshot',{}).get('person_id')!=person:continue
-            if old.get('revision',{}).get('ref')!=request.get('revision',{}).get('ref'):continue
+            # 与人物草稿目录共用小索引；无关任务不解析完整人物/世界请求。
+            context=json.loads((previous/'draft_context.json').read_text(encoding='utf-8'))
+            if not isinstance(context,dict) or context.get('schema')!=1:continue
+            if context.get('goal_id')!=request['goal_id'] or context.get('person_id')!=person:continue
             definition=json.loads((previous/'candidate_definition.json').read_text(encoding='utf-8'))
+            if definition.get('revision_of')!=request.get('revision',{}).get('ref'):continue
             program=json.loads(definition['program_json'])
             packet={'job':previous.name,'source':program['source'],'parameters':definition['parameters'],
                     'dependencies':definition.get('dependencies',{}),
@@ -24,6 +26,11 @@ def failed_draft(folder, request):
             if arguments.exists():
                 packet['candidate_output']={key:definition[key] for key in ('name','description','parameters','parameter_kinds','dependencies')}
                 packet['candidate_output'].update(source=program['source'],capabilities=program['capabilities'],test_arguments=json.loads(arguments.read_text(encoding='utf-8')))
+                cases=previous/'verification_cases.json'
+                if cases.exists():
+                    value=json.loads(cases.read_text(encoding='utf-8'))
+                    if not isinstance(value,list):continue
+                    packet['candidate_output']['verification_cases']=value
             # 超时也有review，但可能没有motion；不能把上一版动作错误配给最新源码。
             reviews=sorted(previous.glob('motion_*/review.json'),key=lambda p:p.stat().st_mtime,reverse=True)
             if reviews:

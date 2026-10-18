@@ -1,6 +1,7 @@
 extends SceneTree
 func _initialize() -> void: run.call_deferred()
 func run() -> void:
+	create_timer(20).timeout.connect(func():push_error("voice location timeout");quit(1))
 	var scene=load("res://scenes/initial_base.tscn").instantiate();root.add_child(scene)
 	var voice=load("res://scripts/voice/voice_test.gd").new();scene.add_child(voice)
 	voice.config.local_only=true;voice.config.autonomy_enabled=false;voice.set_process(false)

@@ -5,7 +5,7 @@ import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Literal
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 import uvicorn
@@ -25,6 +25,15 @@ class DecisionRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     mode: Literal['decision', 'memory']
     prompt: str = Field(min_length=1, max_length=250000)
+    prefix: str = Field(default='', max_length=25000)
+    reference: str = Field(default='', max_length=150000)
+    context_scope: str = Field(default='', max_length=96)
+
+    @model_validator(mode='after')
+    def combined_size(self):
+        if len(self.prompt)+len(self.prefix)+len(self.reference)>250000:
+            raise ValueError('Combined context exceeds 250000 characters')
+        return self
 
 @app.post('/game/exchange')
 async def decision(body: DecisionRequest, authorization: str | None = Header(default=None)):
@@ -37,8 +46,8 @@ async def decision(body: DecisionRequest, authorization: str | None = Header(def
             if not path.is_file():
                 return {'ok': False, 'error': '未配置回忆阶段模型 memory_model.json'}
             config = json.loads(path.read_text(encoding='utf-8'))
-            return await asyncio.to_thread(complete, body.prompt, config)
-        return await asyncio.to_thread(complete, body.prompt)
+            return await asyncio.to_thread(complete, body.prompt, config, prefix=body.prefix, reference=body.reference)
+        return await asyncio.to_thread(complete, body.prompt, prefix=body.prefix, reference=body.reference, context_scope=body.context_scope)
 
 @app.get('/local/status')
 def status(authorization: str | None = Header(default=None)):

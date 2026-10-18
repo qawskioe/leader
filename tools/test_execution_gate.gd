@@ -8,6 +8,9 @@ class Skills extends Node:
  func request_learning(_id, _event, _request):calls+=1;return {"ok":true}
  func request_revision(_id, _event, _request):calls+=1;return {"ok":true}
  func invoke(_id, _event, _request):calls+=1;return {"ok":false,"error":"unexpected call"}
+class Caption extends RefCounted:
+ var shown: Array=[]
+ func begin_public(text):shown.append(text)
 func _initialize():
  create_timer(15).timeout.connect(func():push_error("execution gate timeout");quit(1))
  var voice:=QuietVoice.new()
@@ -36,4 +39,9 @@ func _initialize():
  voice._begin_self_learning(person,event.id,{"learning_request":{"goal_id":"new_method","goal":"新方法"}})
  voice._begin_revision(person,event.id,{"ref":"skill_1","feedback":"修订方法"})
  assert(skills.calls==2,"正常获准的学习和修订仍可启动")
- voice.free();print("EXECUTION_GATE_PASSED report_delayed_callback_live_switch_round_permission");quit()
+ var caption:=Caption.new();voice.captions[person]=caption
+ var decision:={"intent":"none","public_reply":"我先学习这个做法。","capability_gap":null,"task_handling":{"state":"execute"},"learning_request":{"goal_id":"new_method","goal":"新方法"}}
+ voice._on_report({"person_id":person,"event_id":event.id,"decision":decision})
+ assert(skills.calls==3 and caption.shown==[decision.public_reply],"TTS尚未播出时，已获准的学习须通过同一报告入口启动，并显示计划")
+ assert(voice._speech_queue.size()==1,"语音仍独立排队，没有伪造已播放或听闻")
+ voice.free();print("EXECUTION_GATE_PASSED report_delayed_callback_live_switch_round_permission_learning_independent_of_tts");quit()

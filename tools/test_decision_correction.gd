@@ -5,12 +5,15 @@ class Gateway extends Node:
 	var prompts: Array=[]
 	var modes: Array=[]
 	var published: Array=[]
+	var packets: Array=[]
+	var attempts: Array=[{"role":"primary","requested_model":"fixture_primary","model":null,"ok":false,"elapsed_ms":60,"first_event_ms":null,"first_text_ms":null,"usage":null},{"role":"fallback","requested_model":"fixture","model":"fixture","ok":true,"elapsed_ms":10,"usage":{"input_tokens":9,"output_tokens":1}}]
 	func exchange(request: Dictionary) -> Dictionary:
 		assert(published.is_empty(),"校验通过前不能发出可播放或可执行的报告")
-		prompts.append(request.prompt);modes.append(request.mode)
+		packets.append(request.duplicate(true))
+		prompts.append(request.prefix+"\n"+request.reference+"\n"+request.prompt);modes.append(request.mode)
 		assert(not replies.is_empty(),"不能无限重试")
 		await get_tree().process_frame
-		return {"ok":true,"text":JSON.stringify(replies.pop_front()),"model":"fixture","elapsed_ms":1}
+		return {"ok":true,"text":JSON.stringify(replies.pop_front()),"model":"fixture","elapsed_ms":1,"attempts":attempts.duplicate(true),"requested_service_tier":"priority","service_tier":"default"}
 func _initialize() -> void: run.call_deferred()
 func base(state: String) -> Dictionary:
 	return {"intent":"none","private_interpretation":"木块尚未搬完","public_reply":"","speech_style":"","routing_reason":"处理当前任务","speech_act":"statement","addressed_person":"","capability_gap":null,"task_status":"active","task_handling":{"state":state,"scope":"independent","reason":"等待同伴确认位置"},"conversation":{"addressees":["person_003"],"participation":"reply","reason":"原任务仍在进行"}}
@@ -19,20 +22,24 @@ func run() -> void:
 	var pipeline=preload("res://scripts/voice/decision_pipeline.gd").new()
 	var gateway:=Gateway.new();root.add_child(gateway);root.add_child(pipeline)
 	pipeline.gateway=gateway;pipeline.store=preload("res://scripts/voice/people_store.gd").new();assert(pipeline.store.initialize().is_empty())
-	pipeline.store.people.person_003.available_skills=[{"id":"take_object","ref":"take_object@fixture","parameters":{"object":"物品ID"},"revision_supported":true}]
+	pipeline.store.people.person_003.available_skills=[{"id":"take_object","ref":"take_object@fixture","parameters":{"object":"物品ID"},"revision_supported":true,"callable":true}]
 	pipeline.report_ready.connect(func(r):gateway.published.append(r))
 	var invalid:=base("execute");invalid.public_reply="我去拿木块。";invalid.speech_style="平静"
 	var wait:=base("wait")
 	var execute:=base("execute");execute.skill_call={"ref":"skill_1","arguments":{"object":"wood_block"}}
 	var revision:=base("execute");revision.revision_request={"ref":"skill_1","feedback":"伸手时慢一些"}
+	var teach:=base("execute");teach.public_reply="我愿意教你这个方法。";teach.speech_style="平静";teach.addressed_person="person_002"
+	teach.skill_dialogue={"kind":"teach","person_id":"person_002","goal_id":"student_requested_ability","reason":"依据求教选择本人掌握的方法","ref":"skill_1"}
+	var missing_teach:=teach.duplicate(true);missing_teach.skill_dialogue.erase("ref")
+	var unowned_teach:=teach.duplicate(true);unowned_teach.skill_dialogue.ref="unowned@fixture"
 	var duplicate_learning:=base("execute");duplicate_learning.public_reply="继续修订拿取方法";duplicate_learning.speech_style="平静";duplicate_learning.learning_request={"goal_id":"take_object","goal":"根据教导继续修订失败草稿"}
 	var blocked:=base("blocked");blocked.task_handling.reason="当前没有返回最后所见位置并重新观察的技能"
 	for decision in [wait,execute,blocked]: assert(Cloud.validate_task_handling(Cloud.validate_decision(JSON.stringify(decision),true,true).decision).ok)
 	var ask:=base("ask");ask.public_reply="小花，你知道木块在哪里吗？";ask.speech_style="平静";ask.speech_act="request";ask.addressed_person="person_002"
 	assert(Cloud.validate_task_handling(Cloud.validate_decision(JSON.stringify(ask),true,true).decision).ok)
 	assert(not Cloud.validate_task_handling(Cloud.validate_decision(JSON.stringify(invalid),true,true).decision).ok)
-	for scenario in ["fixed","wait","execute","revision","learning_repair","exhausted"]:
-		gateway.published.clear();gateway.prompts.clear();gateway.modes.clear()
+	for scenario in ["fixed","wait","execute","revision","learning_repair","exhausted","teach","teach_missing","teach_unowned"]:
+		gateway.published.clear();gateway.prompts.clear();gateway.modes.clear();gateway.packets.clear()
 		match scenario:
 			"fixed": gateway.replies=[invalid,blocked]
 			"wait": gateway.replies=[wait]
@@ -40,11 +47,20 @@ func run() -> void:
 			"revision": gateway.replies=[revision]
 			"learning_repair": gateway.replies=[duplicate_learning,revision]
 			"exhausted": gateway.replies=[invalid,invalid]
+			"teach":gateway.replies=[teach]
+			"teach_missing":gateway.replies=[missing_teach,teach]
+			"teach_unowned":gateway.replies=[unowned_teach,teach]
 		pipeline.run({"id":scenario,"speaker":"player","kind":"speech_intent","text":"把两件东西搬到干地，石块已经放好了，继续木块。","listeners":["person_003"]},{})
 		await pipeline.completed
+		if gateway.packets.size()==2:
+			assert(gateway.packets[0].prefix==gateway.packets[1].prefix and gateway.packets[0].reference==gateway.packets[1].reference,"校正必须保留稳定规则与同一目录")
 		assert(gateway.published.size()==1)
 		var report: Dictionary=gateway.published[0]
-		if scenario in ["fixed","learning_repair","exhausted"]:
+		for call in report.calls:
+			assert(call.get("attempts")==gateway.attempts,"原决策及校正报告都保留各次上游尝试，未知用量仍为null")
+			assert(call.requested_service_tier=="priority" and call.service_tier=="default","日志必须保留请求与上游回显档位的差异")
+			assert(call.client_timing.started_msec<=call.client_timing.finished_msec and call.client_timing.started_msec>=report.timing.started_msec and call.client_timing.finished_msec<=report.timing.finished_msec,"原判断和校正须保留真实调用边界")
+		if scenario in ["fixed","learning_repair","exhausted","teach_missing","teach_unowned"]:
 			assert(gateway.modes==["decision","decision"])
 			assert(gateway.prompts[1].begins_with(gateway.prompts[0]),"修正须保留完整原情景")
 			assert(report.calls[1].stage=="decision_correction")
@@ -59,6 +75,9 @@ func run() -> void:
 				assert(report.decision.skill_call.ref=="take_object@fixture","执行和存档必须还原完整版本，不能传短编号")
 				assert(report.skill_handle_map.skill_1=="take_object@fixture")
 			if scenario in ["revision","learning_repair"]:assert(report.decision.revision_request.ref=="take_object@fixture")
+			if scenario.begins_with("teach"):
+				assert(report.decision.skill_dialogue.ref=="take_object@fixture" and report.decision.skill_dialogue.goal_id=="student_requested_ability")
+				if scenario!="teach":assert(report.decision_correction.error.contains("skill_dialogue.ref"),"无效授课引用在公开台词前被拒绝")
 	var new_learning:=duplicate_learning.duplicate(true);new_learning.learning_request.goal_id="new_method"
 	var new_check: Dictionary=pipeline._check_final(JSON.stringify(new_learning),{"available_skills":[{"id":"take_object","ref":"skill_1"}]});assert(new_check.ok,"新目标仍允许学习")
 	var catalog_context:={"available_skills":[],"survival_observation":{"action_catalog":{"none":"不行动","give_food":"递给实际接收者"}}}
@@ -116,5 +135,55 @@ func run() -> void:
 	assert(not pipeline._check_final(JSON.stringify(distant),distant_context).ok,"真正听到玩家说话仍需交谈判断")
 	point.position.x=INF
 	assert(not preload("res://scripts/skills/library.gd").valid_argument(point,"reference"),"引用仍拒绝非有限坐标")
+	var cancel_stop:=base("cancelled")
+	cancel_stop.intent="rest";cancel_stop.task_status="cancelled";cancel_stop.task_handling.scope="existing_request"
+	cancel_stop.task_handling.reason="玩家明确停止原任务及正在进行的方法学习"
+	var stop_check: Dictionary=Cloud.validate_decision(JSON.stringify(cancel_stop),true,true)
+	if not stop_check.ok:
+		push_error("停止并取消原任务不应触发多余校正："+stop_check.error);quit(1);return
+	assert(Cloud.validate_task_handling(stop_check.decision).ok)
+	for scope in ["current_request","independent"]:
+		var wrong_stop:=cancel_stop.duplicate(true);wrong_stop.task_handling.scope=scope
+		var parsed: Dictionary=Cloud.validate_decision(JSON.stringify(wrong_stop),true,true)
+		assert(not parsed.ok or not Cloud.validate_task_handling(parsed.decision).ok,"纯停止终态只允许取消此前已接受的任务")
+	for field in ["skill_call","learning_request","revision_request","offer_response"]:
+		var wrong_stop:=cancel_stop.duplicate(true)
+		wrong_stop[field]={"ref":"skill_1","arguments":{}} if field=="skill_call" else {"goal_id":"new_method","goal":"学习新方法"} if field=="learning_request" else {"ref":"skill_1","feedback":"修订方法"} if field=="revision_request" else "accept"
+		var parsed: Dictionary=Cloud.validate_decision(JSON.stringify(wrong_stop),true,true)
+		assert(not parsed.ok or not Cloud.validate_task_handling(parsed.decision).ok,"取消任务不能夹带新提交："+field)
+	var completed_stop:=cancel_stop.duplicate(true);completed_stop.task_status="completed";completed_stop.task_handling.state="completed"
+	assert(not Cloud.validate_decision(JSON.stringify(completed_stop),true,true).ok,"本次例外不放宽完成与执行的冲突")
+	pipeline._event={"kind":"speech_intent","speaker":"player"}
+	assert(not pipeline._check_final(JSON.stringify(cancel_stop),{"available_skills":[]}).ok,"没有旧任务时仍须拒绝existing_request")
+	var old_request:={"id":"cancelled_original","speaker":"player","kind":"speech_intent","text":"一起去水源","listeners":["person_003"]}
+	pipeline.store.hear("person_003",old_request)
+	pipeline.store.working_tasks.person_003={"request":old_request,"state":"action_submitted","action_event_id":"old_move","progress":[]}
+	pipeline.store.people.person_003.survival_observation={"action_catalog":preload("res://scripts/survival/action_catalog.gd").DESCRIPTIONS}
+	gateway.replies=[cancel_stop];gateway.modes.clear();gateway.published.clear();gateway.prompts.clear();gateway.packets.clear()
+	pipeline.run({"id":"cancel_stop_once","speaker":"player","kind":"speech_intent","text":"停止去水源，不需要继续找路","listeners":["person_003"]},{})
+	await pipeline.completed
+	assert(gateway.modes==["decision"] and gateway.published.size()==1 and not gateway.published[0].has("error") and not gateway.published[0].has("decision_correction"),"正确停止取消必须首轮通过正式校验")
+	var full_input: String=gateway.prompts[0]
+	assert(full_input.contains("同时停止当前动作时提交intent=rest") and not full_input.contains("execute对应技能、取消"),"完整发送输入须与纯停止取消合同一致")
+	assert(pipeline.store.working_tasks.person_003.request.id==old_request.id and pipeline.store.working_tasks.person_003.state=="cancelled","停止控制与任务取消终态必须同时保留")
+	pipeline.store.record_execution({"person_id":"person_003","source_event_id":"old_move","intent":"skill","success":false,"cancelled":true,"message":"旧动作迟到结束","runtime":{"status":"cancelled"}})
+	assert(pipeline.store.working_tasks.person_003.state=="cancelled","迟到执行结果不得复活已取消任务")
+	for scope in ["current_request","existing_request"]:
+		var wait_stop:=cancel_stop.duplicate(true);wait_stop.task_status="active";wait_stop.task_handling.state="wait";wait_stop.task_handling.scope=scope
+		wait_stop.task_handling.reason="停止当前行进，等待玩家喝完水后继续"
+		var parsed: Dictionary=Cloud.validate_decision(JSON.stringify(wait_stop),true,true)
+		if not parsed.ok or not Cloud.validate_task_handling(parsed.decision).ok:
+			push_error("明确停止并等待不应再判断一次等待状态");quit(1);return
+		for field in ["skill_call","learning_request","revision_request","offer_response"]:
+			var mixed:=wait_stop.duplicate(true)
+			mixed[field]={"ref":"skill_1","arguments":{}} if field=="skill_call" else {"goal_id":"new_method","goal":"学习新方法"} if field=="learning_request" else {"ref":"skill_1","feedback":"修订方法"} if field=="revision_request" else "accept"
+			var mixed_check: Dictionary=Cloud.validate_decision(JSON.stringify(mixed),true,true)
+			assert(not mixed_check.ok or not Cloud.validate_task_handling(mixed_check.decision).ok,"等待停止不能夹带其他提交："+field)
+		gateway.replies=[wait_stop];gateway.modes.clear();gateway.published.clear();gateway.prompts.clear();gateway.packets.clear()
+		pipeline.run({"id":"wait_stop_"+scope,"speaker":"player","kind":"speech_intent","text":"先停下等我喝完水再继续","listeners":["person_003"]},{})
+		await pipeline.completed
+		assert(gateway.modes==["decision"] and not gateway.published[0].has("error") and not gateway.published[0].has("decision_correction"))
+		assert(pipeline.store.working_tasks.person_003.state=="wait")
+		assert(gateway.prompts[0].contains("停止后等待则选wait并提交intent=rest"),"完整发送输入必须说明停止后的等待状态")
 	print("DECISION_CORRECTION_PASSED one_retry_original_context_no_unvalidated_publication_wait_action_blocked_far_reference_world_notice")
 	quit()

@@ -17,6 +17,7 @@ var pending_speech_at := 0
 var hands = preload("res://scripts/vr/hand_interaction.gd").new()
 var feedback := ""
 var feedback_until := 0
+var _grip_pressed: Dictionary={}
 var targets: Dictionary={}
 var diagnostic_clock := 0.0
 const AudioTrace=preload("res://scripts/vr/audio_trace.gd")
@@ -34,15 +35,7 @@ func _ready() -> void:
 	origin.add_child(head)
 	left = _controller("left_hand", Color("70bfff"))
 	right = _controller("right_hand", Color("ffc878"))
-	transcript_label = Label3D.new()
-	transcript_label.font_size = 26
-	transcript_label.pixel_size = 0.001
-	transcript_label.width = 360
-	transcript_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	transcript_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	transcript_label.position = Vector3(0,0.20,-0.08)
-	transcript_label.text = "你的语音识别结果会显示在这里"
-	left.add_child(transcript_label)
+	_create_hand_labels()
 	for side in ["left","right"]:
 		var marker:=MeshInstance3D.new()
 		var sphere:=SphereMesh.new(); sphere.radius=0.035; sphere.height=0.07
@@ -50,16 +43,10 @@ func _ready() -> void:
 		var material:=StandardMaterial3D.new(); material.shading_mode=BaseMaterial3D.SHADING_MODE_UNSHADED; material.albedo_color=Color("ffe28a")
 		marker.material_override=material
 		add_child(marker); targets[side]=marker
-	status_label = Label3D.new()
-	status_label.font_size = 28
-	status_label.pixel_size = 0.001
-	status_label.position = Vector3(0, 0.12, 0)
-	status_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	right.add_child(status_label)
 	right.button_pressed.connect(_pressed)
 	right.button_released.connect(_released)
-	left.button_pressed.connect(func(action: String): _grip("left",action,true))
-	left.button_released.connect(func(action: String): _grip("left",action,false))
+	left.button_pressed.connect(_left_pressed)
+	left.button_released.connect(_left_released)
 	interface.session_focussed.connect(_resume)
 	interface.session_visible.connect(_suspend)
 	interface.session_stopping.connect(_suspend)
@@ -67,12 +54,38 @@ func _ready() -> void:
 	active = true
 	get_parent().camera.current = false
 	head.current = true
+	# 双眼1616x1648实测：4x MSAA令森林超出帧预算；仅VR入口使用2x。
+	get_viewport().msaa_3d = Viewport.MSAA_2X
 	get_viewport().use_xr = true
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	Engine.physics_ticks_per_second = 90
 	call_deferred("_connect_voice")
 	print("VR_READY: 左摇杆移动，右摇杆分段转向，右扳机按住说话、松开发送。")
+
+func _create_hand_labels() -> void:
+	# 同一布局可用普通 PC 摄像机复验，无需为每次文字修改连接头显。
+	transcript_label = Label3D.new()
+	transcript_label.font_size = 26
+	transcript_label.pixel_size = 0.001
+	transcript_label.width = 360
+	transcript_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	transcript_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	transcript_label.no_depth_test = true
+	transcript_label.outline_size = 6
+	transcript_label.position = Vector3(0,0.20,-0.08)
+	transcript_label.text = "语音识别结果显示在这里"
+	left.add_child(transcript_label)
+	status_label = Label3D.new()
+	status_label.font_size = 28
+	status_label.pixel_size = 0.001
+	status_label.width = 340
+	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status_label.position = Vector3(0, 0.38, 0)
+	status_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	status_label.no_depth_test = true
+	status_label.outline_size = 6
+	right.add_child(status_label)
 
 func _controller(tracker_name: String, color: Color) -> XRController3D:
 	var hand := XRController3D.new()
@@ -112,6 +125,9 @@ func _connect_voice() -> void:
 
 func _suspend() -> void:
 	focused = false
+	_grip_pressed.clear()
+	Input.action_release("player_interact");Input.action_release("player_drink")
+	if is_instance_valid(voice):voice.survival.gathering.cancel_player_action()
 	_cancel_pending_speech()
 	AudioTrace.record("xr_focus_lost",{"recording":is_instance_valid(voice) and voice.mic.recording})
 	if is_instance_valid(voice):
@@ -149,6 +165,17 @@ func _pressed(action: String) -> void:
 		pending_speech_at=Time.get_ticks_msec()
 		_audio_request(pending_speech,"unmute_for_speech")
 
+func _left_pressed(action: String) -> void:
+	_grip("left",action,true)
+	if not focused or not is_instance_valid(voice) or voice.menu.is_open():return
+	if action=="trigger_click":Input.action_press("player_interact")
+	if action=="ax_button":Input.action_press("player_drink")
+
+func _left_released(action: String) -> void:
+	_grip("left",action,false)
+	if action=="trigger_click":Input.action_release("player_interact")
+	if action=="ax_button":Input.action_release("player_drink")
+
 func _released(action: String) -> void:
 	if action in ["trigger_click","grip_click"]: AudioTrace.record("right_button_up",{"action":action,"focused":focused})
 	_grip("right",action,false)
@@ -183,10 +210,17 @@ func _poll_speech_ready() -> void:
 
 func _grip(side: String, action: String, pressed: bool) -> void:
 	if action != "grip_click" or not focused or not is_instance_valid(voice): return
+	# OpenXR 初始化或失焦会发布未曾按下的 released；它不代表玩家要松开读档中的物品。
+	if pressed:_grip_pressed[side]=true
+	else:
+		if not _grip_pressed.has(side):return
+		_grip_pressed.erase(side)
 	var hand: XRController3D = left if side == "left" else right
 	feedback = hands.grab(side,hand.global_position) if pressed else hands.release(side,hand.global_position)
 	feedback_until = Time.get_ticks_msec()+5000
-	voice.log_event({"type":"vr_interaction","hand":side,"pressed":pressed,"message":feedback})
+	var record:={"type":"vr_interaction","hand":side,"pressed":pressed,"message":feedback}
+	if not pressed and not hands.last_release_result.is_empty():record["release_result"]=hands.last_release_result.duplicate(true)
+	voice.log_event(record)
 
 func sync_head() -> void:
 	if active: get_parent().camera.global_transform = head.global_transform
@@ -208,7 +242,7 @@ func _process(_delta: float) -> void:
 	if is_instance_valid(voice):
 		_poll_speech_ready()
 		var recognized: String=voice.last_player_transcript
-		var subtitle: String="你说：\n"+recognized if not recognized.is_empty() else "你的语音识别结果会显示在这里"
+		var subtitle: String="你说：\n"+recognized if not recognized.is_empty() else "语音识别结果显示在这里"
 		if transcript_label.text!=subtitle: transcript_label.text=subtitle
 		hands.reconcile()
 		for side in targets:
@@ -218,8 +252,13 @@ func _process(_delta: float) -> void:
 			if not target.is_empty(): targets[side].global_position=target[3]
 		status_label.text = "正在录音 · 松开发送 · B 丢弃" if voice.mic.recording else "右扳机说话 · B 取消当前交互"
 		if not voice.mic.recording and Time.get_ticks_msec()<feedback_until: status_label.text=feedback
+		if not voice.mic.recording and (Input.is_action_pressed("player_interact") or Input.is_action_pressed("player_drink")):
+			status_label.text=voice.survival.gathering.interaction_hint.text.replace("按住 F","按住左扳机").replace("按住 Q","按住 X")
 		if voice.menu.is_open(): status_label.text = "电脑端菜单已打开，请先关闭"
 		if pending_speech!=0: status_label.text="正在准备麦克风…"
+		var water_key: String=voice.survival.water.held("player")
+		if not water_key.is_empty():
+			status_label.text="水袋 · %d / %d 份水\n"%[voice.survival.water.bags[water_key].contents.count,voice.survival.water.CAPACITY]+status_label.text
 
 static func horizontal_direction(basis: Basis, axis: Vector2) -> Vector3:
 	var forward := -basis.z

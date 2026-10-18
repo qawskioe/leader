@@ -26,7 +26,7 @@ func run():
  store.people[id].needs.hunger=72.0;sim.eaten=5;sim.water.player_thirst=63.0
  var before:=Session.capture(sim,library)
  var path:="user://sessions/test_%d.json"%Time.get_ticks_usec()
- assert(Session.save(path,sim,library).is_empty())
+ assert((await Session.save(path,sim,library,self)).is_empty())
  sim.storage_contents.clear();sim.world_objects._detach("water_bag/1");sim.world_objects._detach("basket/1")
  store.working_tasks.clear();store.people[id].needs.hunger=1
  actor.body.position+=Vector3(4,0,0);fruit.available=true;sim.water.player_thirst=1

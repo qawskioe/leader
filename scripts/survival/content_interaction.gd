@@ -16,16 +16,8 @@ func opening_position(id: String) -> Vector3:
 
 func _access(person: String, id: String) -> Dictionary:
 	if not containers.has(id):
-		return {"ok":false,"code":"not_observed" if sim.perception.known(person,id).is_empty() else "unsupported_container"}
-	var record: Dictionary=containers[id].record
-	var held_by_self: bool=record.holder==person
-	if not held_by_self:
-		if sim.perception.known(person,id).is_empty(): return {"ok":false,"code":"not_observed"}
-		if not sim.perception.sees(person,opening_position(id),record.body.get_rid()): return {"ok":false,"code":"not_visible"}
-	if not preload("res://scripts/skills/interaction_range.gd").reachable(sim.actors[person].body,opening_position(id)): return {"ok":false,"code":"out_of_reach"}
-	# 距离和可见性通过后才能获知容器当前状态。
-	if record.holder not in ["",person]: return {"ok":false,"code":"held_by_other"}
-	return {"ok":true}
+		return {"ok":false,"code":"not_observed"}
+	return sim.life_world.access_source(person,id)
 
 func inspect(person: String, id: String) -> Dictionary:
 	var accessible:=_access(person,id)
@@ -45,6 +37,7 @@ func transfer(person: String, source: String, target: String, quantity: int) -> 
 	for id in [source,target]:
 		var changed: Callable=containers[id].changed
 		if changed.is_valid(): changed.call()
-	sim.perception.observe(person)
-	sim._sync(person)
+	if sim.actors.has(person):sim.perception.observe(person)
+	sim.life_world._sync(person)
+	sim.life_world.fact.emit({"kind":"stored","person_id":person,"material":result.material,"source":source,"target":target,"quantity":quantity,"source_event_id":sim.life_world._event(person)})
 	return result

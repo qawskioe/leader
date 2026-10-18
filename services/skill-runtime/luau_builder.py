@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'text-gateway'))
 from revision_evidence import collect
-from motion_review import review
+from motion_review import review,replay_budget
 from world_outcomes import prepare as prepare_outcomes
 from learning_draft import failed_draft
 from review_report import write_report
@@ -29,7 +29,7 @@ def failure_message(error, verdict):
 
 def candidate(output, request):
     keys={'name','description','source','parameters','parameter_kinds','capabilities','dependencies','test_arguments'}
-    if not isinstance(output,dict) or set(output)!=keys:raise ValueError('输出字段必须完整且没有额外字段')
+    if not isinstance(output,dict) or not keys<=set(output) or set(output)-keys-{'verification_cases'}:raise ValueError('输出字段必须完整且没有额外字段')
     if not all(isinstance(output[k],str) for k in ('name','description','source')):raise ValueError('正文必须是字符串')
     if not 1<=len(output['name'])<=80 or not 1<=len(output['description'])<=500 or not 1<=len(output['source'].encode())<=60000:raise ValueError('正文长度无效')
     params=output['parameters'];kinds=output['parameter_kinds'];deps=output['dependencies'];args=output['test_arguments']
@@ -39,6 +39,9 @@ def candidate(output, request):
     ops=output['capabilities']
     if not isinstance(ops,list) or any(op not in request['world_operations'] for op in ops) or len(ops)!=len(set(ops)):raise ValueError('世界权限无效')
     if len(deps)>16 or any(not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*',a) or ref not in request['owned_skills'] for a,ref in deps.items()):raise ValueError('依赖必须是本人已掌握版本')
+    if 'verification_cases' in output:
+        from verification_cases import validate
+        validate(output['verification_cases'],request,params)
     revision=request.get('revision',{})
     old=revision.get('definition',{})
     if old and (params!=old['parameters'] or kinds!={k:old.get('parameter_kinds',{}).get(k,'reference') for k in params}):raise ValueError('修订不能改变参数合同')
@@ -63,11 +66,12 @@ def execute(folder,request):
     deadline=time.monotonic()+POLICY['budget_seconds']
     revision=request.get('revision',{});old=revision.get('definition',{})
     config=model_config(ROOT,selection)
+    config['cancellation_file']=str(folder/'cancelled')
     evidence,_images=collect(revision,request['character_context'],folder.parent) if revision else ({'trigger_event':request['creation']['player_event'],'requested_goal':request['creation']['goal']},[])
     (folder/'revision_evidence.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
     cancelled=lambda:(folder/'cancelled').exists()
     if cancelled():return 1
-    write(folder,{'state':'testing','model':config['model'],'message':'正在独立确定本次技能的验收条件'})
+    write(folder,{'state':'planning','model':config['model'],'message':'正在独立确定本次技能的验收条件'})
     try:prepare_outcomes(folder,request,config)
     except (ValueError,KeyError,TypeError) as error:
         write(folder,{'state':'failed','message':'未能确定验收条件：'+str(error)});return 1
@@ -94,20 +98,27 @@ def execute(folder,request):
             target.write_bytes(image_path.read_bytes());paths.append(target.relative_to(workspace.root).as_posix())
         workspace.export('reference/visual/index.json',{'files':paths,'meaning':'本人旧技能的历史隔离回放，不是当前实时视野；按需要读取。'})
     last_verdict={}
-    def verify():
+    def verify(mode):
         nonlocal last_verdict
         if cancelled():return {'ok':False,'error':'已取消'}
-        if workspace.test_count>=POLICY['attempts']:return {'ok':False,'error':'本次独立验证次数已用尽'}
-        if deadline-time.monotonic()<25:return {'ok':False,'error':'剩余预算不足，未开始验证'}
+        if mode not in ('inspect','run'):raise ValueError('验证mode必须是inspect或run')
         proposal=workspace.output()
         definition,program,arguments=candidate(proposal,request)
+        remaining=max(0,deadline-time.monotonic())
+        budget=replay_budget(folder,remaining,proposal.get('verification_cases',[]))
+        if mode=='inspect':
+            return {'ok':True,'mode':mode,'can_start':workspace.test_count<POLICY['attempts'] and remaining>=25 and budget['timeout_seconds']>=15,
+                    'remaining_seconds':int(remaining),'remaining_tests':POLICY['attempts']-workspace.test_count,
+                    'verification_preconditions':workspace.verification_preconditions,**budget}
+        if workspace.test_count>=POLICY['attempts']:return {'ok':False,'error':'本次独立验证次数已用尽'}
+        if remaining<25 or budget['timeout_seconds']<15:return {'ok':False,'error':'剩余预算不足以回放并保留独立审查时间，未开始验证'}
         workspace.test_count+=1;attempt=workspace.test_count
         commit=workspace.checkpoint('独立验证第%d版'%attempt)
         digest=hashlib.sha256(json.dumps(proposal,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
         if workspace.digest()!=digest:raise ValueError('提交期间候选发生变化，请重试验证')
         if workspace.git('show',commit+':source.luau')!=program['source']:raise ValueError('Git提交与受检源码不一致')
         if json.loads(workspace.git('show',commit+':skill.json'))!={k:v for k,v in proposal.items() if k!='source'}:raise ValueError('Git提交与受检声明不一致')
-        for name,value in [('candidate_definition.json',definition),('candidate.json',program),('test_arguments.json',arguments)]:
+        for name,value in [('candidate_definition.json',definition),('candidate.json',program),('test_arguments.json',arguments),('verification_cases.json',proposal.get('verification_cases',[]))]:
             (folder/name).write_text(json.dumps(value,ensure_ascii=False),encoding='utf-8')
         (folder/'source.luau').write_text(program['source'],encoding='utf-8')
         write(folder,{'state':'testing','attempt':attempt,'model':config['model'],'message':'工具已提交当前Git版本，正在独立回放'})
@@ -117,7 +128,9 @@ def execute(folder,request):
         workspace.export('feedback/review_%d.json'%attempt,workspace.evidence_index.pack(verdict,'review'))
         if verdict['passed'] and workspace.digest()==digest:
             workspace.approved={'digest':digest,'definition':definition,'commit':commit,'review':verdict}
-        return {'ok':verdict['passed'],'passed':verdict['passed'],'commit':commit,'feedback_file':'feedback/review_%d.json'%attempt,'owner':verdict.get('owner'),'retryable':verdict.get('retryable',False),'failure_kind':verdict.get('failure_kind',''),'remaining_tests':POLICY['attempts']-attempt}
+        budget_file=folder/('motion_%d'%attempt)/'replay_budget.json'
+        used_budget=json.loads(budget_file.read_text(encoding='utf-8')) if budget_file.exists() else {}
+        return {'ok':verdict['passed'],'mode':mode,'passed':verdict['passed'],'commit':commit,'feedback_file':'feedback/review_%d.json'%attempt,'owner':verdict.get('owner'),'retryable':verdict.get('retryable',False),'failure_kind':verdict.get('failure_kind',''),'remaining_tests':POLICY['attempts']-attempt,'remaining_seconds':max(0,int(deadline-time.monotonic())),'replay_budget':used_budget}
     result=run(workspace,config,deadline,verify,lambda value:write(folder,value),cancelled,folder,selection)
     if not result['ok']:
         write(folder,{'state':'failed','message':failure_message(result['error'],last_verdict),'review':last_verdict});return 1
@@ -138,13 +151,17 @@ def verify_existing(folder):
     if (folder/'source.luau').read_text(encoding='utf-8')!=program['source']:raise ValueError('候选源码与定义不一致')
     from development_backend import read_selection,model_config
     config=model_config(ROOT,read_selection(ROOT));config.update(reasoning_effort='medium')
+    config['cancellation_file']=str(folder/'cancelled')
     revision=request.get('revision',{});creation=request.get('creation',{})
     goal=json.dumps({'original':revision.get('player_event',creation.get('player_event',{})),'goal':creation.get('goal',revision.get('feedback',''))},ensure_ascii=False)
     if (folder/'cancelled').exists():return 1
-    prepare_outcomes(folder,request,config)
+    deadline=time.monotonic()+POLICY['budget_seconds']
+    try:prepare_outcomes(folder,request,config)
+    except (ValueError,KeyError,TypeError) as error:
+        write(folder,{'state':'failed','message':'未能确定验收条件：'+str(error)});return 1
     attempt='recheck_'+str(int(time.time()))
     write(folder,{'state':'testing','model':config['model'],'message':'宿主修正后重新独立回放已有候选，未重新生成代码'})
-    verdict=review(folder,config,ROOT,ENGINE,attempt,goal=goal)
+    verdict=review(folder,config,ROOT,ENGINE,attempt,goal=goal,deadline=deadline)
     if (folder/'cancelled').exists():return 1
     if not verdict['passed']:
         write(folder,{'state':'failed','message':'重新验证未通过，未加载候选','review':verdict});return 1

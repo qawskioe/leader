@@ -12,6 +12,8 @@ static func restored_transform(value: Array) -> Transform3D:
 	return Transform3D(Basis(point(value[0]),point(value[1]),point(value[2])),point(value[3]))
 static func capture(sim: Node, person: String) -> Dictionary:
 	var data:={"person_id":person,"clock":sim.store.memory.clock,"people":{},"objects":{},"containers":{},"hands":{},"observations":sim.store.memory.observations.duplicate(true),"records":sim.store.memory.records.duplicate(true)}
+	var task: Dictionary=sim.store.working_tasks.get(person,{})
+	if task.has("execution_origin"):data["host_execution_origin"]={"request_id":task.request.id,"transform":task.execution_origin.duplicate(true)}
 	var player: Node3D=sim.scene.get_node("Player")
 	data["player"]={"position":vector(player.global_position),"rotation":vector(player.rotation),"eyes_rotation":vector(player.get_node("Eyes").rotation)}
 	for id in sim.actors:
@@ -121,9 +123,11 @@ static func restore(sim: Node, data: Dictionary) -> void:
 		resource.mesh.global_transform=restored_transform(saved.transform)
 		resource.mesh.visible=saved.available;resource.body.collision_layer=int(saved.collision_layer)
 	sim.store.memory.clock=data.clock;sim.perception.clock=data.clock
+	# 快照记录已经属于此时刻；新场景的日序0不能触发快照前的日终整理并清空位置线索。
+	sim.store.memory.consolidated_day=int(data.clock/float(sim.store.memory.policy.day_seconds))
 	sim.perception.memories=data.observations.duplicate(true)
 	sim.store.memory.observations=data.observations.duplicate(true)
-	sim.store.memory.records=data.records.duplicate(true)
+	sim.store.memory.replace_records_owned(data.records.duplicate(true))
 	for item in sim.gathering.loose_food.values():item.body.queue_free()
 	sim.gathering.loose_food.clear()
 	for id in data.loose_food:
@@ -142,7 +146,13 @@ static func restore(sim: Node, data: Dictionary) -> void:
 	for id in sim.actors:sim._sync(id)
 static func evidence(sim: Node, person: String) -> Dictionary:
 	var actor: Dictionary=sim.actors[person]
-	var result:={"needs":sim.store.people[person].needs.duplicate(true),"position":vector(actor.body.global_position),"objects":{},"containers":{},"hand_unit":units([sim.gathering.hands[person]])[0] if sim.gathering.hands.has(person) else {}}
+	var result:={"needs":sim.store.people[person].needs.duplicate(true),"position":vector(actor.body.global_position),"objects":{},"containers":{},"participants":{},"hand_unit":units([sim.gathering.hands[person]])[0] if sim.gathering.hands.has(person) else {}}
+	for key in sim.perception.memories.get(person,{}):
+		if not str(key).begins_with("person/"):continue
+		var other: String=str(key).trim_prefix("person/")
+		if other==person:continue
+		var body: Node3D=sim.scene.get_node("Player") if other=="player" else sim.actors[other].body
+		result.participants[other]={"position":vector(body.global_position)}
 	for id in sim.world_objects.objects:
 		var obj: Dictionary=sim.world_objects.objects[id]
 		result.objects[id]={"position":vector(obj.body.global_position),"holder":obj.holder,"hand":obj.hand}

@@ -4,6 +4,16 @@ signal offered(event: Dictionary)
 var sim: Node
 var pending: Dictionary={}
 var units: Dictionary={}
+const QUEUE_TIMEOUT_MS=180000
+const DECISION_TIMEOUT_MS=120000 # 既有文字请求单次60秒，加一次供应商备用。
+
+func begin_receiver_decision(key: String, recipient: String) -> bool:
+	if not pending.has(key) or pending[key].recipient!=recipient:return false
+	var offer: Dictionary=pending[key]
+	if Time.get_ticks_msec()>offer.expires:return false
+	if not offer.decision_started:
+		offer.decision_started=true;offer.expires=Time.get_ticks_msec()+DECISION_TIMEOUT_MS
+	return true
 
 func _held(giver: String, object: String) -> bool:
 	if units.has(object): return is_same(sim.gathering.hands.get(giver,{}),units[object])
@@ -34,7 +44,8 @@ func _check(giver: String, object: String, recipient: String) -> Dictionary:
 	if not _held(giver,object):return {"ok":false,"code":"not_held","message":"物品不在本人手中，未发生交付"}
 	if recipient==giver or (recipient!="player" and not sim.actors.has(recipient)):
 		return {"ok":false,"code":"invalid_recipient","message":"接收者无效"}
-	if sim.perception.known(giver,"person/"+recipient).is_empty():return {"ok":false,"code":"unknown_recipient","message":"本人没有接收者的观察或记忆"}
+	# 玩家由当前准星和距离选择接收者，不建立NPC的角色记忆。
+	if giver!="player" and sim.perception.known(giver,"person/"+recipient).is_empty():return {"ok":false,"code":"unknown_recipient","message":"本人没有接收者的观察或记忆"}
 	var target: Node3D=sim.water.owner(recipient)
 	if not sim.gathering._reachable(giver,target.global_position+Vector3.UP,2.0):
 		return {"ok":false,"code":"out_of_reach","message":"尚未到可交接的距离，物品仍在本人手中；需要先靠近接收者"}
@@ -42,6 +53,17 @@ func _check(giver: String, object: String, recipient: String) -> Dictionary:
 	if receiving_hand.is_empty():return {"ok":false,"code":"recipient_occupied","message":"接收者没有可用的接物手，需先腾出手；未发生交付"}
 	if recipient!="player" and sim.actors[recipient].stage!="idle":return {"ok":false,"code":"recipient_busy","message":"对方仍在执行动作，尚未交付"}
 	return {"ok":true,"hand":receiving_hand}
+
+func player_offer_availability(object: String, recipient: String) -> Dictionary:
+	var checked:=_check("player",object,recipient)
+	if not checked.ok:return checked
+	for offer in pending.values():
+		if offer.giver=="player" and offer.object==object and offer.answer.is_empty():
+			return {"ok":false,"code":"offer_pending","message":"已递出，正在等待对方决定"}
+	var record: Dictionary=sim.world_objects.objects[object]
+	if not sim.perception.sees(recipient,sim.world_objects.grip_position(object),record.body.get_rid()):
+		return {"ok":false,"code":"not_seen_by_recipient","message":"对方尚未看见递出的物品，请先取得对方注意"}
+	return checked
 
 func give(giver: String, object: String, recipient: String) -> Dictionary:
 	var checked:=_check(giver,object,recipient)
@@ -54,9 +76,10 @@ func give(giver: String, object: String, recipient: String) -> Dictionary:
 		return {"ok":false,"code":"not_seen_by_recipient","message":"对方尚未看见递出的物品，请先取得对方注意"}
 	var key:="handover_%d"%Time.get_ticks_usec()
 	var name: String=("一份水" if units[object].get("material")=="water" else "一份食物") if units.has(object) else sim.world_objects.observable_extra(object).name
-	var offer:={"giver":giver,"object":object,"recipient":recipient,"answer":{},"expires":Time.get_ticks_msec()+45000}
+	var offer:={"giver":giver,"object":object,"recipient":recipient,"answer":{},"decision_started":false,"expires":Time.get_ticks_msec()+QUEUE_TIMEOUT_MS}
 	pending[key]=offer
-	offered.emit({"id":key,"kind":"item_offer","item_kind":"object","speaker":giver,"listeners":[recipient],"text":str(sim.store.people[giver].name)+"将"+name+"递给你，仍在对方手中。由你决定接受或拒绝，尚未交付。"})
+	var giver_name: String="玩家" if giver=="player" else str(sim.store.people[giver].name)
+	offered.emit({"id":key,"kind":"item_offer","item_kind":"object","speaker":giver,"listeners":[recipient],"text":giver_name+"将"+name+"递给你，仍在对方手中。由你决定接受或拒绝，尚未交付。"})
 	while offer.answer.is_empty():
 		await get_tree().process_frame
 		# 接受回调可能已完成真实转移；不能再用旧持有人校验覆盖其成功结果。

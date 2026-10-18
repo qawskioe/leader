@@ -28,11 +28,10 @@ func _initialize() -> void:
 	assert(encoded.has("event_id_aliases") and encoded.has("own_replies"))
 	assert(JSON.stringify(encoded).length()<JSON.stringify(transcript).length())
 	for turn in encoded.recent_turns:
-		assert(turn.event.text=="玩家说的原话保持完整" and turn.event.result.skill_ref=="技能引用不改")
-		turn["own_reply"]=encoded.own_replies[turn.own_reply_ref];turn.erase("own_reply_ref")
-	restore_ids(encoded,encoded.event_id_aliases)
-	encoded.erase("event_id_aliases");encoded.erase("own_replies")
-	assert(encoded==transcript,"编号、嵌套因果关联、沉默状态、每条理解必须无损恢复")
+		assert(turn.event.text=="玩家说的原话保持完整")
+	var decoded:=History.expand(encoded)
+	for turn in decoded.recent_turns:assert(turn.event.result.skill_ref=="技能引用不改")
+	assert(decoded==transcript,"编号、嵌套因果关联、沉默状态、每条理解必须无损恢复")
 	assert(transcript.recent_turns[0].event.source_event_id==long_id,"不得改存档")
 	var long_history:={"recent_turns":[],"task":{"request":{"text":"当前任务保留"}}}
 	for index in 130:
@@ -51,11 +50,3 @@ func _initialize() -> void:
 	assert(History.expand_structures(packed_records)==repeated_records,"嵌套记录布局必须保留全部字段、顺序和精确数值")
 	print("PROMPT_HISTORY_PASSED lossless_system_text_dedup_no_dialogue_removal")
 	quit()
-
-func restore_ids(value: Variant, aliases: Dictionary) -> void:
-	if value is Dictionary:
-		for key in value:
-			if key in History.EVENT_ID_FIELDS and value[key] is String and aliases.has(value[key]):value[key]=aliases[value[key]]
-			else:restore_ids(value[key],aliases)
-	elif value is Array:
-		for item in value:restore_ids(item,aliases)

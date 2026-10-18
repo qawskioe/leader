@@ -32,7 +32,7 @@ func run() -> void:
 			player.get_node("Eyes").rotation.x=pitch;objects.sync_held(key)
 			expected.append(objects.objects[key].body.global_transform)
 		var path:="user://sessions/holding_%d.json"%Time.get_ticks_usec()
-		assert(Session.save(path,sim,library).is_empty())
+		assert((await Session.save(path,sim,library,self)).is_empty())
 		var checked:=Session.read(path,sim);assert(checked.ok,str(checked.get("error")))
 		objects._detach(key);Session.restore(sim,library,checked);player.set_physics_process(false)
 		for i in 2:

@@ -1,6 +1,7 @@
 extends SceneTree
 func _initialize() -> void: run.call_deferred()
 func run() -> void:
+	create_timer(10).timeout.connect(func():quit(1))
 	var scene=load("res://scenes/initial_base.tscn").instantiate();root.add_child(scene)
 	var voice=load("res://scripts/voice/voice_test.gd").new();scene.add_child(voice)
 	await preload("res://scripts/skills/luau_playtest.gd").prepare(voice,"user://skills/luau/short_%d.json"%Time.get_ticks_usec())
@@ -10,7 +11,7 @@ func run() -> void:
 	var wood: Node3D=voice.skills.world_objects.objects.wood_block.body
 	var old: Array=store.memory.observations[id].wood_block.position.duplicate()
 	store.hear(id,{"id":"request","speaker":"player","text":"把你面前那两个东西搬到池塘外面"})
-	store.remember(id,"request",{"private_interpretation":"石块和木块都要搬","public_reply":"","skill_call":{"ref":"take","arguments":{"object":"stone_tool"}}})
+	store.remember(id,"request",{"private_interpretation":"石块和木块都要搬","public_reply":"","task_status":"active","task_handling":{"state":"execute","scope":"current_request","reason":"处理玩家的搬运请求"},"skill_call":{"ref":"take","arguments":{"object":"stone_tool"}}})
 	sim.actors[id].body.rotation.y=PI
 	# 改变人物看不到的真实物体，短期记忆不得自动跟随。
 	wood.global_position+=Vector3(30,0,0)

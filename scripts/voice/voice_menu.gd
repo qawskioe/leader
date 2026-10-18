@@ -4,6 +4,7 @@ var controller: Node
 var panel: PanelContainer
 var fields: Dictionary = {}
 const ConversationLog=preload("res://scripts/voice/conversation_log.gd")
+const MouseMode=preload("res://scripts/player_mouse_mode.gd")
 var grouped: Tree
 var output: TextEdit
 var status: Label
@@ -79,7 +80,7 @@ func _ready() -> void:
 	capswriter_asr.button_pressed = controller.config.get("capswriter_asr",true)
 	settings.add_child(capswriter_asr)
 	tts_enabled = CheckBox.new()
-	tts_enabled.text = "播放公开答复（Gemini API 3.8 / 人物独立音色；关闭后仅测试文字）"
+	tts_enabled.text = "生成并播放公开答复（关闭后不请求 TTS，保留头顶文字与人物交流）"
 	tts_enabled.button_pressed = controller.config.get("tts_enabled",true)
 	settings.add_child(tts_enabled)
 	actions_enabled = CheckBox.new()
@@ -212,6 +213,7 @@ func _ready() -> void:
 func _session_action(action: String) -> void:
 	if action in ["quit","discard"]:
 		controller.session_manager.quit_game(action=="quit");return
+	if controller.session_manager.is_locked():return
 	var error: String=await controller.session_manager.save_game() if action=="save" else await controller.session_manager.load_game()
 	if not error.is_empty():session_status.text=error
 
@@ -242,7 +244,7 @@ func _show_cloud_fields(use_local_asr: bool) -> void:
 
 func open() -> void:
 	panel.show()
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	MouseMode.set_mode(self,Input.MOUSE_MODE_VISIBLE)
 
 func toggle() -> void:
 	if panel.visible:
@@ -252,7 +254,7 @@ func toggle() -> void:
 
 func close() -> void:
 	panel.hide()
-	Input.mouse_mode=Input.MOUSE_MODE_CAPTURED
+	MouseMode.set_mode(self,Input.MOUSE_MODE_CAPTURED)
 
 func is_open() -> bool:
 	return panel.visible

@@ -7,8 +7,11 @@ from opencode_host import Host
 class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.count=0
-        def verify():self.count+=1;return {'passed':False,'reason':'fixture'}
+        self.count=0;self.inspections=0
+        def verify(mode):
+            if mode=='run':self.count+=1
+            else:self.inspections+=1
+            return {'passed':False,'reason':'fixture','mode':mode}
         self.host=Host(Path(self.tmp.name),'unused',{'url':'https://example.invalid','key':'not-sent'},verify)
         self.host.thread.start();self.addCleanup(self.host.close)
     def request(self,message,token=True):
@@ -19,8 +22,15 @@ class BridgeTests(unittest.TestCase):
     def test_only_verify_tool_is_exposed(self):
         result=self.request({'jsonrpc':'2.0','id':1,'method':'tools/list'})
         self.assertEqual([t['name'] for t in result['result']['tools']],['verify_skill'])
-        self.request({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'verify_skill','arguments':{}}})
+        schema=result['result']['tools'][0]['inputSchema']
+        self.assertEqual(schema['required'],['mode']);self.assertEqual(schema['properties']['mode']['enum'],['inspect','run'])
+        self.request({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'verify_skill','arguments':{'mode':'run'}}})
         self.assertEqual(self.count,1)
+    def test_inspect_reaches_host_without_becoming_a_verification_receipt(self):
+        result=self.request({'id':2,'method':'tools/call','params':{'name':'verify_skill','arguments':{'mode':'inspect'}}})
+        value=json.loads(result['result']['content'][0]['text'])
+        self.assertEqual(value['mode'],'inspect');self.assertEqual(self.inspections,1)
+        self.assertEqual(self.count,0);self.assertEqual(self.host.calls,[])
     def test_completed_event_ends_bridge_without_waiting_for_upstream_eof(self):
         stop=threading.Event()
         class Upstream(BaseHTTPRequestHandler):
@@ -45,7 +55,9 @@ class BridgeTests(unittest.TestCase):
     def test_no_auth_or_extra_arguments_cannot_execute(self):
         with self.assertRaises(urllib.error.HTTPError) as error:self.request({'id':1,'method':'tools/list'},False)
         self.assertEqual(error.exception.code,401)
-        result=self.request({'id':2,'method':'tools/call','params':{'name':'verify_skill','arguments':{'path':'../other'}}})
-        self.assertIn('error',result);self.assertEqual(self.count,0)
+        for arguments in [{},{'mode':'other'},{'mode':'inspect','path':'../other'},{'path':'../other'}]:
+            result=self.request({'id':2,'method':'tools/call','params':{'name':'verify_skill','arguments':arguments}})
+            self.assertIn('error',result)
+        self.assertEqual(self.count,0);self.assertEqual(self.inspections,0)
 
 if __name__=='__main__':unittest.main()

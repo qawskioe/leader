@@ -17,6 +17,10 @@ func check(condition: bool, message: String) -> void:
 		quit(1)
 
 func _run() -> void:
+	if not OS.get_cmdline_user_args().has("--tts"):
+		push_error("此测试会调用真实 TTS；仅在试听验收时显式传入 --tts")
+		quit(1)
+		return
 	var scene: Node = load("res://scenes/initial_base.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene

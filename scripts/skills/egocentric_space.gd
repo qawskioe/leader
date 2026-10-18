@@ -160,7 +160,7 @@ static func execution_phases(trace: Array) -> Array:
 	for step in trace:
 		if not step is Dictionary or not step.get("result") is Dictionary or step.get("operation","") in ["perceive","recall_locations","walk_options"]:continue
 		var phase:={"operation":step.get("operation",""),"ok":step.result.get("ok"),"code":step.result.get("code","")}
-		for key in ["object","material","quantity","distance_m","contact_limit_m"]:
+		for key in ["object","holder","hand","recipient","material","source","target","quantity","source_count","destination_count","distance_m","contact_limit_m","horizontal_error","height_error","supported","speed"]:
 			if step.result.has(key):phase[key]=step.result[key]
 		if step.result.get("release_location") is Dictionary:phase["release_location"]=step.result.release_location.duplicate(true)
 		if step.has("elapsed_ms"):phase["elapsed_ms"]=step.elapsed_ms
@@ -171,7 +171,7 @@ static func execution_phases(trace: Array) -> Array:
 
 static func sanitize_event(event: Dictionary) -> void:
 	# 听闻已有方向/距离，不再附带玩家世界坐标；内部事件保留原命令但移除原始轨迹。
-	event.erase("source_position");event.erase("positions")
+	event.erase("source_position");event.erase("positions");event.erase("player_voice_sources")
 	if event.get("original_event") is Dictionary: sanitize_event(event.original_event)
 	if event.get("result") is Dictionary: event.result.erase("world_position")
 	if event.get("result") is Dictionary and event.result.get("runtime") is Dictionary:
@@ -180,7 +180,7 @@ static func sanitize_event(event: Dictionary) -> void:
 		var message: String=str(event.result.get("skill_name","动作"))+"："+str(runtime.get("code",returned.get("code","")))
 		if event.get("text") is String and event.result.get("message") is String: event.text=event.text.replace(event.result.message,message)
 		var phases: Array=runtime.get("phase_summary",execution_phases(runtime.get("trace",[])))
-		event.result["execution_summary"]={"complete_action_history":runtime.has("phase_summary"),"status":runtime.get("status",""),"elapsed_ms":runtime.get("elapsed_ms",0),"phases":phases,"meaning":"phases按实际执行顺序排列，省略纯感知采样；complete_action_history=false时旧记录可能只有尾部，不可因未列出而断言此前没做；feedback只是最后返回值，不代表整段动作。requested_seconds是请求时长，实际耗时看elapsed_ms/timing。success只说明执行是否报错；goal_verified=false表示宿主未确认整体目标，不等于已经证实失败。请结合原要求和各阶段证据判断。"}
+		event.result["execution_summary"]={"complete_action_history":runtime.has("phase_summary"),"status":runtime.get("status",""),"elapsed_ms":runtime.get("elapsed_ms",0),"phases":phases,"meaning":"phases按顺序记录实际世界操作及回执，省略纯感知采样；complete_action_history表示是否覆盖全程。feedback是方法返回值。requested_seconds是请求时长，实际耗时看elapsed_ms/timing。success表示代码正常结束且方法返回ok；原请求完成到哪一步，由本人结合各阶段回执与world_facts判断。"}
 		var failures: Array=[]
 		for step in runtime.get("trace",[]):
 			if not step is Dictionary or not step.get("result") is Dictionary or step.result.get("ok",true):continue

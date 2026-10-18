@@ -25,6 +25,9 @@ func _initialize():
  event.result.success=false;event.result.cancelled=true;assert(not Controller.revision_event_error(event,"eat@old").is_empty())
  assert(not Controller.revision_event_error({"kind":"skill_progress","learning_failed":true},"eat@old").is_empty())
  assert(not Controller.revision_event_error({"kind":"skill_revised"},"eat@old").is_empty())
+ assert(not Controller.learning_event_error({"kind":"skill_progress","learning_failed":true,"original_event":{"speaker":"player"}}).is_empty())
+ assert(not Controller.learning_event_error({"kind":"skill_ready","original_event":{"speaker":"player"}}).is_empty())
+ assert(Controller.learning_event_error({"kind":"speech_intent","speaker":"player"}).is_empty())
  var continuation:={"kind":"skill_progress","original_event":{"id":"teaching","speaker":"player","kind":"speech_intent","text":"先停下探索，修订采果方法"},"result":{"intent":"rest","success":true}}
  assert(Controller.revision_event_error(continuation,"gather@old").is_empty(),"停止旧动作后仍可续办玩家的修订请求")
  continuation.result={"skill_ref":"look@old","success":true}

@@ -38,7 +38,7 @@ func _release_body() -> void:
 	if sim.skill_motion_result.is_connected(_on_motion):sim.skill_motion_result.disconnect(_on_motion)
 	var actor: Dictionary=sim.actors[person_id]
 	if actor.get("skill_owner")!=get_instance_id():return
-	actor.erase("motion_guard");actor.erase("keep_motion_heading");actor.erase("skill_owner")
+	actor.erase("motion_guard");actor.erase("keep_motion_heading");actor.erase("motion_stop_distance");actor.erase("motion_contacts");actor.erase("skill_owner")
 	actor.stage="idle";actor.path=PackedVector3Array();actor.body.velocity=Vector3.ZERO
 	sim._animation(actor,"Idle");sim._sync(person_id)
 

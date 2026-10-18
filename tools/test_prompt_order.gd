@@ -1,8 +1,10 @@
 extends SceneTree
 func _initialize() -> void:
+	create_timer(5).timeout.connect(func():quit(1))
 	var pipeline=preload("res://scripts/voice/decision_pipeline.gd")
 	var context:={"id":"person_001","name":"石头","space_observation":{"id":"old_frame"},"needs":{"hunger":70},"working_context":{"recent_turns":[{"event":{"id":"old","speaker":"player","text":"带我去月亮旁边"},"own_understanding":"先沿前方走"}],"task":{"request":{"id":"old","text":"带我去月亮旁边"}}}}
 	var event:={"id":"new","kind":"speech_intent","speaker":"player","text":"先别带路，再问一次月亮在哪里"}
+	context["available_skills"]=[]
 	var original:=JSON.stringify(context)
 	var prompt: String=pipeline.prompt_for(context,event)
 	var wire: String=prompt.get_slice("\n",prompt.get_slice_count("\n")-1)

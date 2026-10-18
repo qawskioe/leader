@@ -1,5 +1,6 @@
 extends SceneTree
 func _initialize():
+	create_timer(5).timeout.connect(func():quit(1))
 	var view=preload("res://scripts/voice/experience_view.gd").new()
 	var working:={"recent_turns":[],"task":{"request":{"id":"task","text":"采果后交给小花，不要放进储食处"},"progress":[]}}
 	for i in 500:
@@ -22,5 +23,53 @@ func _initialize():
 	assert(not view.read({"ref":packet.earlier_today.action.experience_ref,"limit":9}).ok)
 	var other=preload("res://scripts/voice/experience_view.gd").new()
 	assert(not other.read({"ref":packet.earlier_today.action.experience_ref}).ok,"不能读取其他人的目录")
-	print("EXPERIENCE_VIEW_PASSED recent_request_preserved_paged_500_events_no_mutation")
+	# 正在续办的动作事实不能随大阶段记录一起藏进整块引用。
+	var action:={"success":true,"source_event_id":"take_bag","world_facts":[{"kind":"held","object":"water_bag/1","holder":"person_004"}],"feedback":{"ok":true,"code":"taken","detail":"x".repeat(4000)},"execution_summary":{"status":"completed","complete_action_history":true,"phases":[{"operation":"take_object","result":{"ok":true},"detail":"x".repeat(4000)}]}}
+	var event:={"id":"take_result","speaker":"world","kind":"skill_progress","result":action}
+	var action_working:={"recent_turns":[{"event":event}],"task":{"request":{"id":"return","text":"把原袋还给我"},"progress":[action],"last_result":action}}
+	var action_before:=JSON.stringify(action_working)
+	var action_packet: Dictionary=other.build(action_working)
+	var current: Dictionary=other.event_view(event)
+	for visible in [current.result,action_packet.recent_turns[0].event.result,action_packet.task.progress[0],action_packet.task.last_result]:
+		assert(visible.success and visible.world_facts==action.world_facts,"本次实际变化必须直接提供")
+		assert(visible.feedback.ok and visible.feedback.code=="taken")
+		assert(visible.execution_summary.status=="completed" and visible.execution_summary.complete_action_history)
+		var detail_result: Dictionary=other.read({"ref":visible.feedback.detail.experience_ref})
+		assert(detail_result.ok and detail_result.total==4000,"完整细节仍可展开")
+	assert(JSON.stringify(action_working)==action_before,"发送视图不得改写记忆或实际结果")
+	var conversation: Array=[]
+	for i in 67:conversation.append({"id":"conversation_%d"%i,"text":"较早的不同任务" if i<66 else "当前脚边，原袋两份水，放稳再还我"})
+	var request:={"id":"confirmed","text":"按刚才说好的做","request_context":conversation}
+	var request_before:=JSON.stringify(request)
+	var request_packet: Dictionary=other.event_view(request)
+	assert(request_packet.request_context is Array and request_packet.request_context.size()==12)
+	assert(request_packet.request_context[-1].text==conversation[-1].text,"最近的任务澄清必须首轮直接可见")
+	var earlier: Dictionary=other.read({"ref":request_packet.earlier_request_context.experience_ref,"offset":0,"limit":1})
+	assert(earlier.ok and earlier.total==55 and earlier.records[0].id=="conversation_0","旧原话完整保留，仍能读取")
+	assert(JSON.stringify(request)==request_before)
+	var repeated_request: Dictionary=other.event_view(request)
+	assert(repeated_request.earlier_request_context.experience_ref==request_packet.earlier_request_context.experience_ref,"同一完整资料应复用引用，不能因编码次序制造不相等的原请求")
+	var samples: Array=[]
+	for i in 54:samples.append({"probe":{"x":i*0.75,"y":0.0,"z":0.75},"position":{"x":0.123456789+i,"y":0.00000001,"z":2.23456789},"normal":{"x":0.0,"y":1.0,"z":0.0},"state":"visible_surface","surface_kind":"dry_ground"})
+	var spatial:={"id":"fixed_frame","near_field":{"ground_samples":samples,"landmarks":{"basket/1":{"position":{"x":0.123456789,"y":0.67,"z":2.4}}},"held_objects":[{"id":"water_bag/1","hand":"Hand.R"}],"unknown_rule":"未知不是空地"}}
+	var spatial_before:=JSON.stringify(spatial)
+	var observed: Dictionary=other.observation_view(spatial)
+	assert(JSON.stringify(spatial)==spatial_before and observed.id==spatial.id)
+	assert(observed.near_field.landmarks==spatial.near_field.landmarks and observed.near_field.held_objects==spatial.near_field.held_objects,"可见地标、坐标和持物仍直接提供")
+	var terrain: Dictionary=observed.near_field.ground_samples
+	assert(terrain.count==54 and terrain.states.visible_surface==54 and terrain.surface_kinds.dry_ground==54)
+	var exact: Dictionary=other.read({"ref":terrain.experience_ref,"limit":54})
+	assert(exact.ok and exact.records==samples,"一次读取完整同帧采样，保留原顺序、坐标与法线精度")
+	assert(not other.read({"ref":terrain.experience_ref,"limit":65}).ok)
+	var same_history: Dictionary=other.make_ref(samples,"history/same_samples")
+	assert(same_history.experience_ref!=terrain.experience_ref)
+	assert(other.read({"ref":same_history.experience_ref,"limit":8}).ok)
+	assert(not other.read({"ref":same_history.experience_ref,"limit":54}).ok,"即使内容相同，观察分页能力也不能放宽普通历史分页")
+	assert(JSON.stringify(observed).length()<spatial_before.length()*0.15,"普通决策不重复携带整份精确地面网格")
+	var next_round=preload("res://scripts/voice/experience_view.gd").new()
+	next_round.make_ref({"unrelated":"本轮多出一份资料"},"new")
+	var same_terrain: Dictionary=next_round.make_ref(samples,"observation/ground_samples",64)
+	assert(same_terrain.experience_ref==terrain.experience_ref,"相同资料跨轮不能因其他资料先编码而换号，制造额外缓存差分")
+	assert(not next_round.read({"ref":same_history.experience_ref,"limit":54}).ok,"稳定内容编号不授予其他轮次尚未登记的资料")
+	print("EXPERIENCE_VIEW_PASSED recent_request_preserved_paged_500_events_direct_action_facts_latest_clarification_no_mutation")
 	quit()

@@ -1,7 +1,21 @@
 """宿主验收条件：在候选生成前固定；只读回放事实，不执行模型表达式。"""
 import json
+import hashlib
 import math
+import re
+from pathlib import Path
 from text_model import complete
+
+def world_contract():
+    """规划、作者与审查读取同一当前世界接口，不推断不存在的交互机制。"""
+    lines=Path(__file__).with_name('luau_sdk.md').read_text(encoding='utf-8').splitlines()
+    operations={}
+    for line in lines:
+        match=re.match(r'^- ([a-z_]+) (\{.*)',line)
+        if match:operations[match[1]]=match[2]
+        elif line.startswith('`check_settled {object}`'):operations['check_settled']=line
+    progress=next(line for line in lines if line.startswith('`context.task_execution='))
+    return {'operations':operations,'execution_progress':progress}
 
 REVIEW_STAGE = {
     'name':'candidate_preflight',
@@ -11,7 +25,9 @@ REVIEW_STAGE = {
 }
 
 PROMPT = '''你是宿主验收规划器，不是技能作者。根据玩家原话、当前要学习/修订的技能目标和宿主快照，确定本次隔离回放应满足的可测结果。不能查看或依赖候选源码、候选测试参数、候选自报成功。原话优先于摘要，但只验收本次技能职责，不要求一个子技能独自完成整个复合请求。这不是创作新任务。
-只输出JSON：{"checks":[条件],"semantic_requirements":["仍需独立审查的要求"]}。最多8条条件和8条语义要求。
+只输出JSON：{"checks":[条件],"semantic_requirements":["仍需独立审查的要求"],"participant_behaviors":[]}。最多8条条件和8条语义要求。
+participant_behaviors是隔离测试参与者的行为前提，最多4项，格式为{"person":"before.participants中的人物标识","behavior":"stay或follow_actor"}。普通任务留空。请求需要对方持续跟随时，明确设置follow_actor；它只让测试替身以正常碰撞移动跟随受检角色，不传送、不生成材料、不替候选实现动作，不证明真实玩家或人物会配合。stay保留参与者当前位置。行为前提由你在编写前固定，不依据候选代码或测试参数调整；独立审查仍需核对完整目标与拒绝/掉队分支。
+baseline_preconditions提供与已掌握完整版本匹配的历史验收前提及来源，不表示新候选通过。保留原能力时沿用仍适用的前提；本次原话确实需要改变时，可增加baseline_adjustment字符串说明变化理由（1至500字），交独立审查。未解决的参与者身份须按当前before重新确定。
 每条条件含description（解释为何来自本次要求）、kind、path（宿主快照字段路径，字符串数组）。支持：
 1. equals：再含expected，检查执行后该字段精确等于预期；适用objects/物品ID/holder或hand。holder空字符串表示松开。
 2. delta_min或delta_max：再含amount有限数字，检查执行后减执行前 >= 或 <= amount；适用needs/具体需求。不能凭空要求未被请求的需求变化。
@@ -21,8 +37,15 @@ PROMPT = '''你是宿主验收规划器，不是技能作者。根据玩家原�
 
 def baseline(request):
     snapshot = request['verification_snapshot']
-    actor = snapshot['people'][snapshot['person_id']]
+    person = snapshot['person_id']; actor = snapshot['people'][person]
+    participants = {}
+    for key in snapshot.get('observations',{}).get(person,{}):
+        if not key.startswith('person/'):continue
+        other=key.removeprefix('person/')
+        value=snapshot.get('player') if other=='player' else snapshot['people'].get(other)
+        if other!=person and value:participants[other]={'position':value['position']}
     return {'needs': actor['needs'], 'position': actor['position'],
+            'participants':participants,
             'objects': {key: {field: item[field] for field in ('position', 'holder', 'hand')}
                         for key, item in snapshot['objects'].items()}}
 
@@ -51,8 +74,19 @@ def position_path(path):
 
 
 def validate(plan, before):
-    if not isinstance(plan, dict) or set(plan) != {'checks', 'semantic_requirements'}:
+    if not isinstance(plan, dict) or not {'checks','semantic_requirements'}<=set(plan) or set(plan)-{'checks','semantic_requirements','participant_behaviors','baseline_adjustment'}:
         raise ValueError('验收计划字段无效')
+    if 'baseline_adjustment' in plan and (not isinstance(plan['baseline_adjustment'],str) or not 1<=len(plan['baseline_adjustment'].strip())<=500):
+        raise ValueError('历史验收前提的调整须提供1至500字理由')
+    behaviors=plan.get('participant_behaviors',[])
+    if not isinstance(behaviors,list) or len(behaviors)>4:raise ValueError('隔离参与者行为最多4项')
+    used=set()
+    for item in behaviors:
+        if (not isinstance(item,dict) or set(item)!={'person','behavior'}
+                or not isinstance(item['person'],str) or item['person'] not in before.get('participants',{})
+                or item['person'] in used or item['behavior'] not in ('stay','follow_actor')):
+            raise ValueError('隔离参与者行为须引用本人已知的其他参与者，且不能重复')
+        used.add(item['person'])
     checks, semantic = plan['checks'], plan['semantic_requirements']
     if not isinstance(checks, list) or len(checks) > 8 or not isinstance(semantic, list) or len(semantic) > 8 or not (checks or semantic):
         raise ValueError('验收计划必须有明确要求且数量受限')
@@ -81,13 +115,65 @@ def validate(plan, before):
     return plan
 
 
+def planning_context(context):
+    # 规划器确定本次方法的验收，不扮演角色续办当天事务。
+    # 当前空间和方法目录用于理解目标；原话、宿主前置事实另行完整提供。
+    return {key:context[key] for key in ('id','name','space_observation','survival_observation',
+                                       'visible_people','available_skills','interaction_rules') if key in context}
+
+
+def approved_baseline_preconditions(request, jobs_root):
+    """完整批准版本的历史前提；不依赖截图，不携带旧世界坐标或旧通过结论。"""
+    missing={'available':False,'participant_behaviors':[]}
+    revision=request.get('revision',{})
+    if not revision:return missing
+    actor=request['verification_snapshot']['person_id']
+    if request['character_context']['id']!=actor:raise ValueError('当前人物与验收主体不一致')
+    participants=baseline(request)['participants']
+    paths=sorted(Path(jobs_root).glob('job_*/package.json'),key=lambda p:p.stat().st_mtime,reverse=True)
+    for path in paths:
+        try:
+            package=json.loads(path.read_text(encoding='utf-8'));receipt=package['receipt']
+            status=json.loads((path.parent/'status.json').read_text(encoding='utf-8'))
+            if status['state']!='ready' or status['review']['passed'] is not True:continue
+            if receipt['verifier']!='leader-luau-tests-v1' or receipt['passed'] is not True:continue
+            raw=receipt['definition_json']
+            if hashlib.sha256(raw.encode()).hexdigest()!=receipt['definition_sha256']:continue
+            if json.loads(raw)!=package['definition'] or package['definition']!=revision['definition']:continue
+            behaviors=status['review']['outcomes']['participant_behaviors']
+            plan=json.loads((path.parent/'outcome_plan.json').read_text(encoding='utf-8'))
+            if behaviors!=plan.get('participant_behaviors',[]):continue
+            if not isinstance(behaviors,list) or len(behaviors)>4:continue
+            used=set()
+            for item in behaviors:
+                if (not isinstance(item,dict) or set(item)!={'person','behavior'} or not isinstance(item['person'],str)
+                        or not item['person'] or item['person'] in used or item['behavior'] not in ('stay','follow_actor')):
+                    raise ValueError('历史参与者前提无效')
+                used.add(item['person'])
+            old_request=json.loads((path.parent/'build_request.json').read_text(encoding='utf-8'))
+            old_actor=old_request['verification_snapshot']['person_id']
+            if not isinstance(old_actor,str) or not old_actor:continue
+            mapped=[];unmapped=[]
+            for item in behaviors:
+                # 玩家是固定外部实体；跨人物学习时不能猜测旧NPC对应哪个新参与者。
+                if item['person'] in participants and (item['person']=='player' or old_actor==actor):mapped.append(item)
+                else:unmapped.append(dict(item,reason='当前未知或跨人物身份尚未对应'))
+            return {'available':True,'origin':{'job':path.parent.name,'revision_ref':revision['ref'],
+                    'definition_sha256':receipt['definition_sha256'],'actor_id':old_actor},
+                    'participant_behaviors':mapped,'unmapped_participants':unmapped}
+        except (OSError,ValueError,KeyError,TypeError,AttributeError):
+            continue  # 未完整发布或损坏的历史资料不作为批准前提。
+    return missing
+
+
 def prepare(folder, request, config):
     """每次编写任务只规划一次；重试不能因候选失败而降低条件。"""
     before = baseline(request)
     revision, creation = request.get('revision', {}), request.get('creation', {})
-    payload = {'review_stage':REVIEW_STAGE,'original': revision.get('player_event', creation.get('player_event', {})),
+    previous=approved_baseline_preconditions(request,folder.parent)
+    payload = {'review_stage':REVIEW_STAGE,'world_contract':world_contract(),'original': revision.get('player_event', creation.get('player_event', {})),
                'skill_goal': creation.get('goal', revision.get('feedback', '')),
-               'character_context': request['character_context'], 'before': before,
+               'character_context': planning_context(request['character_context']), 'before': before,'baseline_preconditions':previous,
                'object_names': {key: obj.get('name', key) for key, obj in request['verification_snapshot']['objects'].items()}}
     response = complete(PROMPT + '\n' + json.dumps(payload, ensure_ascii=False),
                         dict(config, instructions='独立规划世界结果验收，严格输出JSON。', reasoning_effort='medium', total_timeout_seconds=60))
@@ -95,6 +181,12 @@ def prepare(folder, request, config):
     if not response.get('ok'):
         raise ValueError('验收规划失败：' + str(response.get('error', '模型未返回结果')))
     plan = validate(json.loads(response['text']), before)
+    current={item['person']:item['behavior'] for item in plan.get('participant_behaviors',[])}
+    if any(current.get(item['person'])!=item['behavior'] for item in previous['participant_behaviors']) and not plan.get('baseline_adjustment'):
+        raise ValueError('本次计划改变了已批准版本的参与者前提，但没有提供调整理由，未开始编写')
+    preconditions={'baseline_participant_behaviors':plan.get('participant_behaviors',[]),
+                   'baseline_preconditions':previous,'baseline_adjustment':plan.get('baseline_adjustment','')}
+    (folder/'verification_preconditions.json').write_text(json.dumps(preconditions,ensure_ascii=False,indent=2),encoding='utf-8')
     (folder/'outcome_plan.json').write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding='utf-8')
     return plan
 
@@ -119,4 +211,6 @@ def evaluate(plan, before, after):
         results.append({'description': check['description'], 'passed': passed, 'measured': value, 'kind': kind})
     # 空条件表示仅能由语义审查判断，绝不能作为任务已完成的批准。
     return {'passed': all(row['passed'] for row in results), 'checks': results,
+            'participant_behaviors':plan.get('participant_behaviors',[]),
+            'baseline_adjustment':plan.get('baseline_adjustment',''),
             'semantic_requirements': plan['semantic_requirements'], 'meaning': '仅数值条件；仍需独立语义审查'}

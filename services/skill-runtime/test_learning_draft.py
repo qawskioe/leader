@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys,tempfile,unittest,os
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'text-gateway'))
 from learning_draft import failed_draft
 
@@ -13,6 +14,7 @@ class DraftTests(unittest.TestCase):
                 folder=root/('job_'+name);folder.mkdir()
                 (folder/'status.json').write_text(json.dumps({'state':state}))
                 (folder/'build_request.json').write_text(json.dumps({'goal_id':goal,'verification_snapshot':{'person_id':person}}))
+                (folder/'draft_context.json').write_text(json.dumps({'schema':1,'goal_id':goal,'person_id':person,'goal':'测试草稿'}))
                 (folder/'candidate_definition.json').write_text(json.dumps({'program_json':json.dumps({'source':name}),'parameters':{}}))
             packet=failed_draft(current,request)
             self.assertEqual(packet['source'],'own')
@@ -25,7 +27,8 @@ class DraftTests(unittest.TestCase):
             old=root/'job_old';old.mkdir()
             (old/'status.json').write_text(json.dumps({'state':'failed'}))
             (old/'build_request.json').write_text(json.dumps(request))
-            (old/'candidate_definition.json').write_text(json.dumps({'program_json':json.dumps({'source':'failed revision'}),'parameters':{}}))
+            (old/'draft_context.json').write_text(json.dumps({'schema':1,'goal_id':'g','person_id':'a','goal':'测试修订'}))
+            (old/'candidate_definition.json').write_text(json.dumps({'revision_of':'g@v1','program_json':json.dumps({'source':'failed revision'}),'parameters':{}}))
             self.assertEqual(failed_draft(current,request)['source'],'failed revision')
             request['revision']['ref']='g@v2'
             self.assertEqual(failed_draft(current,request),{})
@@ -45,6 +48,7 @@ class DraftTests(unittest.TestCase):
             request={'goal_id':'g','verification_snapshot':{'person_id':'a'}}
             (old/'status.json').write_text(json.dumps({'state':'failed'}))
             (old/'build_request.json').write_text(json.dumps(request))
+            (old/'draft_context.json').write_text(json.dumps({'schema':1,'goal_id':'g','person_id':'a','goal':'测试超时'}))
             (old/'candidate_definition.json').write_text(json.dumps({'program_json':json.dumps({'source':'third version'}),'parameters':{}}))
             first=old/'motion_2';first.mkdir()
             (first/'motion.json').write_text(json.dumps({'result':{'runtime':{'returned':{'code':'old error'}}}}))
@@ -56,5 +60,35 @@ class DraftTests(unittest.TestCase):
             self.assertEqual(packet['source'],'third version')
             self.assertEqual(packet['previous_review']['owner'],'executor')
             self.assertNotIn('previous_execution',packet)
+
+    def test_compact_identity_skips_unrelated_large_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);current=root/'job_current';current.mkdir()
+            for name,person in [('own','a'),('other','b')]:
+                folder=root/('job_'+name);folder.mkdir()
+                (folder/'status.json').write_text(json.dumps({'state':'failed'}))
+                (folder/'draft_context.json').write_text(json.dumps({'schema':1,'person_id':person,'goal_id':'g','goal':'测试'}))
+                (folder/'build_request.json').write_text('invalid full request: never read')
+                (folder/'candidate_definition.json').write_text(json.dumps({'program_json':json.dumps({'source':name}),'parameters':{}}))
+            original=Path.read_text
+            def guarded(path,*args,**kwargs):
+                self.assertNotEqual(path.name,'build_request.json','草稿选择不得读取大型请求包')
+                return original(path,*args,**kwargs)
+            with patch.object(Path,'read_text',guarded):
+                self.assertEqual(failed_draft(current,{'goal_id':'g','verification_snapshot':{'person_id':'a'}})['source'],'own')
+
+    def test_retry_preserves_candidate_verification_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);current=root/'job_current';current.mkdir();old=root/'job_old';old.mkdir()
+            (old/'status.json').write_text(json.dumps({'state':'failed'}))
+            (old/'draft_context.json').write_text(json.dumps({'schema':1,'person_id':'a','goal_id':'g','goal':'测试'}))
+            definition={'name':'方法','description':'测试方法','parameters':{},'parameter_kinds':{},'dependencies':{},'program_json':json.dumps({'source':'return function() end','capabilities':[]})}
+            (old/'candidate_definition.json').write_text(json.dumps(definition))
+            (old/'test_arguments.json').write_text('{}')
+            cases=[{'name':'after_delivery','steps':[{'conditions':[],'arguments':{}},{'conditions':[],'resume_previous':True}]}]
+            (old/'verification_cases.json').write_text(json.dumps(cases))
+            packet=failed_draft(current,{'goal_id':'g','verification_snapshot':{'person_id':'a'}})
+            self.assertEqual(packet['candidate_output']['verification_cases'],cases)
+            self.assertFalse((current/'package.json').exists())
 
 if __name__=='__main__':unittest.main()

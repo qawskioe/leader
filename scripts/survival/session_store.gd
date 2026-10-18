@@ -13,20 +13,32 @@ static func capture(sim: Node, library: RefCounted) -> Dictionary:
 			if sim.store.people[id].has(field):people[id][field]=sim.store.people[id][field].duplicate(true)
 	return {"world":Snapshot.capture(sim,sim.actors.keys()[0]),"people":people,"memory":sim.store.memory.export_data(),"skills":library.export_data()}
 
-static func save(path: String, sim: Node, library: RefCounted, continuity: Dictionary={}) -> String:
+static func save(path: String, sim: Node, library: RefCounted, tree: SceneTree, continuity: Dictionary={}) -> String:
 	if not sim.ready_for_actions:return "世界尚未就绪"
 	for actor in sim.actors.values():
 		if actor.stage!="idle":return "仍有行动未停止，未保存"
 	var data:=capture(sim,library)
 	data["continuity"]=continuity.duplicate(true)
+	var destination:=ProjectSettings.globalize_path(path)
+	var result:={"error":"存档工作线程未返回结果"}
+	# capture 深拷贝后的容器只交给本次写入，不在线程中访问场景或共享历史。
+	var task:=WorkerThreadPool.add_task(func():
+		result.error=_write_snapshot(data,destination)
+		# 最后一个主线程引用仍在等待协程里；在工作线程释放大容器，避免返回时再次卡帧。
+		data.clear())
+	while not WorkerThreadPool.is_task_completed(task):await tree.process_frame
+	WorkerThreadPool.wait_for_task_completion(task)
+	return result.error
+
+static func _write_snapshot(data: Dictionary, destination: String) -> String:
 	var body:=JSON.stringify(data)
-	if DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path).get_base_dir())!=OK:return "无法创建存档目录"
-	var file:=FileAccess.open(path+".tmp",FileAccess.WRITE)
+	if DirAccess.make_dir_recursive_absolute(destination.get_base_dir())!=OK:return "无法创建存档目录"
+	var file:=FileAccess.open(destination+".tmp",FileAccess.WRITE)
 	if file==null:return "无法写入临时存档"
 	file.store_string(JSON.stringify({"schema":1,"sha256":body.sha256_text(),"payload":body}));file.flush()
 	var error:=file.get_error();file.close()
 	if error!=OK:return "存档写入失败，原存档保留"
-	if DirAccess.rename_absolute(ProjectSettings.globalize_path(path+".tmp"),ProjectSettings.globalize_path(path))!=OK:return "无法替换正式存档"
+	if DirAccess.rename_absolute(destination+".tmp",destination)!=OK:return "无法替换正式存档"
 	return ""
 
 static func _vector(value: Variant) -> bool:
@@ -130,11 +142,17 @@ static func restore(sim: Node, library: RefCounted, checked: Dictionary) -> void
 	var memory=checked.memory;memory.path=store.memory.path
 	store.memory=memory;store.working_events=memory.short_events;store.working_tasks=memory.tasks
 	for id in data.people:
-		for field in data.people[id]:store.people[id][field]=data.people[id][field].duplicate(true)
+		for field in data.people[id]:
+			if field in store.HISTORY_FIELDS:
+				# 已验证的 JSON 历史正文交给只读所有者，避免额外克隆整份历史。
+				store.people[id][field]=data.people[id][field].duplicate()
+				for record in store.people[id][field]:memory.freeze_owned(record)
+			else:store.people[id][field]=data.people[id][field].duplicate(true)
 	library.definitions=checked.library.definitions;library.owners=checked.library.owners
 	for id in sim.actors:
 		sim.actors[id].stage="idle";sim.actors[id].path=PackedVector3Array();sim._animation(sim.actors[id],"Idle");sim._sync(id)
 	var player: Node3D=sim.scene.get_node("Player")
+	player.restore_desktop_view()
 	player.velocity=Vector3.ZERO;player.set_physics_process(true)
 	for id in sim.world_objects.objects:
 		var obj: Dictionary=sim.world_objects.objects[id]

@@ -32,6 +32,34 @@ class Client:
 
 class ServiceTests(unittest.TestCase):
     def setUp(self):self.client=Client();self.addCleanup(self.client.close)
+    def test_transport_reassembles_utf8_and_control_characters_across_chunks(self):
+        payload='水🙂'*3000+chr(0)+chr(10)+chr(34)+chr(92)
+        value=dict(op='start',id='chunks',source='return function(args, context) return {payload=context.payload} end',capabilities=[],arguments={},context={'payload':payload})
+        raw=(json.dumps(value,ensure_ascii=False)+'\n').encode('utf-8')
+        for sequence,offset in enumerate(range(0,len(raw),1024)):
+            ack=self.client.send(op='transport_chunk',sequence=sequence,hex=raw[offset:offset+1024].hex(),last=offset+1024>=len(raw))
+            self.assertEqual(ack,{'type':'transport_ack','sequence':sequence})
+        result=self.client.messages.get(timeout=5)
+        self.assertEqual(result['type'],'completed')
+        self.assertEqual(result['result'],{'payload':payload})
+
+    def test_transport_rejects_oversized_malformed_and_out_of_order_chunks(self):
+        for sequence,hex_data,error in [(0,'00'*1025,'invalid_transport_chunk'),(1,'00','invalid_transport_sequence'),(0,'0','invalid_transport_chunk'),(0,'gg','invalid_hex')]:
+            with self.subTest(sequence=sequence,error=error):
+                result=self.client.send(op='transport_chunk',sequence=sequence,hex=hex_data,last=False)
+                self.assertEqual(result['type'],'failed')
+                self.assertEqual(result['error'],error)
+                self.assertEqual(self.client.start('return {ok=true}')['type'],'completed')
+
+    def test_transport_preserves_total_limit_and_recovers_after_rejection(self):
+        for sequence in range(1024):
+            ack=self.client.send(op='transport_chunk',sequence=sequence,hex='20'*1024,last=False)
+            self.assertEqual(ack,{'type':'transport_ack','sequence':sequence})
+        result=self.client.send(op='transport_chunk',sequence=1024,hex='20',last=False)
+        self.assertEqual(result['type'],'failed')
+        self.assertEqual(result['error'],'message_too_large')
+        self.assertEqual(self.client.start('return {ok=true}')['type'],'completed')
+
     def test_nearby_carried_target_does_not_chase_its_own_rotation(self):
         source=(Path(__file__).resolve().parents[2]/'data/skills/go_to_known.luau').read_text(encoding='utf-8')
         r=self.client.send(op='start',id='near',source=source,capabilities=['recall_locations','walk_options','look_toward'],arguments={'object':'bag','distance':1.0},context={})
@@ -79,6 +107,11 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.client.send(op='resume',id='test',sequence=5,result={})['type'],'failed')
     def test_cyclic_result(self):
         self.assertEqual(self.client.start('local a={} a.self=a return a')['type'],'failed')
+    def test_result_capacity_error_preserves_service_and_next_invocation(self):
+        r=self.client.start('local data={} for i=1,4096 do data[tostring(i)]=i end return data')
+        self.assertEqual(r['type'],'failed');self.assertEqual(r['error'],'result_size_exceeded')
+        r=self.client.start('return {ok=true,code="summary"}')
+        self.assertEqual(r['type'],'completed');self.assertTrue(r['result']['ok'])
     def test_yield_without_world_request(self):
         self.assertEqual(self.client.start('coroutine.yield()')['type'],'failed')
 

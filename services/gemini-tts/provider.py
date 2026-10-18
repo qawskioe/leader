@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 import time
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
@@ -134,12 +135,16 @@ def synthesize(value):
                                     headers={'x-goog-api-key': key, 'Content-Type': 'application/json',
                                              'Accept': 'text/event-stream'})
     started = time.monotonic()
+    stage = 'connect_or_headers'
+    sent = 0
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=45) as response:
+            stage = 'stream'
             for packet in packets(events(response)):
                 if time.monotonic() - started > 90:
                     raise TimeoutError('TTS 超过 90 秒总时限')
                 packet['elapsed_ms'] = round((time.monotonic() - started) * 1000)
+                if packet['type'] == 'audio': sent += 1
                 yield packet
     except urllib.error.HTTPError as error:
         if error.code == 402:
@@ -152,5 +157,12 @@ def synthesize(value):
         if error.code in (401,403):
             raise RuntimeError(f'Gemini TTS HTTP {error.code}：密钥或模型访问权限错误') from None
         raise RuntimeError(f'Gemini TTS HTTP {error.code}：上游服务拒绝了请求') from None
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError) as error:
+        # 只保留传输诊断，不能写公开台词、提示词、请求头、网址或原始异常文本。
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        detail = {'time':datetime.now(timezone.utc).isoformat(), 'stage':stage,
+                  'elapsed_ms':round((time.monotonic()-started)*1000), 'audio_packets_sent':sent,
+                  'error_type':type(error).__name__, 'reason_type':type(reason).__name__,
+                  'errno':reason.errno if isinstance(reason,OSError) else None}
+        (ROOT/'runtime/last_transport_error.json').write_text(json.dumps(detail,indent=2),encoding='utf-8')
         raise RuntimeError('Gemini TTS 网络连接失败或超时') from None

@@ -27,6 +27,9 @@ class Workspace:
         self.evidence_index=EvidenceIndex(self.export)
         self.export('reference/task.json',self.evidence_index.pack({'goal_id':request['goal_id'],'creation':request.get('creation',{}),'revision':{k:v for k,v in request.get('revision',{}).items() if k!='definition'},'world_operations':request['world_operations']}))
         self.export('reference/evidence.json',self.evidence_index.pack(evidence))
+        preconditions=folder/'verification_preconditions.json'
+        self.verification_preconditions=json.loads(preconditions.read_text(encoding='utf-8')) if preconditions.exists() else {}
+        self.export('reference/verification_preconditions.json',self.verification_preconditions)
         self.export('reference/previous_failure.json',self.evidence_index.pack({k:v for k,v in draft.items() if k not in ('source','candidate_output')}))
         for key,value in request['character_context'].items():
             # 文件名来自宿主合同，不来自模型路径。

@@ -23,8 +23,8 @@ func run() -> void:
 	assert(voice.dispatched.is_empty() and voice.autonomy.requests.size()==1,"不能在首条世界请求尚未到达时抢开另一轮模型")
 	starting.pending=false
 	# 世界请求到达并发出递物事件，正常排队入口必须先处理接收者。
-	voice.survival.handover.pending.priority_offer={}
-	voice._player_offers.append({"id":"priority_offer","kind":"item_offer","speaker":"person_003","listeners":["person_004"],"text":"实际递物请求夹具"})
+	voice.survival.handover.pending.priority_offer={"recipient":"person_004","expires":Time.get_ticks_msec()+10000,"decision_started":false}
+	voice._queue_offer({"id":"priority_offer","kind":"item_offer","speaker":"person_003","listeners":["person_004"],"text":"实际递物请求夹具"})
 	voice._process(0)
 	assert(voice.dispatched.size()==1 and voice.dispatched[0].id=="priority_offer")
 	assert(voice.autonomy.requests.size()==1,"背景任务保留，不能靠删除来制造优先级")

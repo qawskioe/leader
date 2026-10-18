@@ -20,5 +20,16 @@ func _initialize() -> void:
 	decision.task_handling.scope="existing_request"
 	store.remember(id,result.id,decision)
 	assert(store.working_tasks[id].request.id==current.id)
+	var accepted: Dictionary=store.working_tasks[id].duplicate(true)
+	var question:={"id":"side_question","kind":"information_request","speaker":"person_004","text":"储食处还有吃的吗？"}
+	store.hear(id,question)
+	decision.skill_call=null;decision.intent="none"
+	decision.task_handling.scope="current_request";decision.task_handling.state="completed";decision.task_status="completed"
+	store.remember(id,question.id,decision)
+	assert(store.working_tasks[id]==accepted,"回答本轮同伴问题不能完成此前仍在处理的玩家任务")
+	assert(not store.decision_targets_task(id,question.id,"current_request"))
+	assert(store.decision_targets_task(id,question.id,"existing_request"))
+	store.remember(id,result.id,decision)
+	assert(store.working_tasks[id].state=="completed","原请求自身的实际结果仍能完成原任务")
 	print("TASK_SCOPE_PASSED silent_current_request_independent_existing")
 	quit()

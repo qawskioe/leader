@@ -24,9 +24,11 @@ func _run() -> void:
 			assert(close.visibility_range_end == tree.visibility_range_begin)
 			assert(tree.visibility_range_end == 24.0)
 			assert(_triangles(close.mesh) > _triangles(tree.mesh))
+			assert(_triangles(close.mesh) < 14000)
+			assert(_triangles(tree.mesh) < 4000)
 		for tree in far_trees:
 			assert(tree.visibility_range_begin == 24.0)
-			assert(_triangles(tree.mesh) < 10000)
+			assert(_triangles(tree.mesh) < 1500)
 		for tree in outdoor.find_children("ShadowTree_*", "MeshInstance3D", true, false):
 			assert(tree.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
 			assert(_triangles(tree.mesh) < 3500)

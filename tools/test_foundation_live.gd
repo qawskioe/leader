@@ -7,7 +7,7 @@ func _run() -> void:
 	var voice:=Voice.new()
 	voice.name="VoiceTest"; scene.add_child(voice)
 	voice.config.local_only=false; voice.config.autonomy_enabled=true
-	voice.config.actions_enabled=true; voice.config.tts_enabled=true
+	voice.config.actions_enabled=true; voice.config.tts_enabled=false
 	voice.menu.close()
 	while not voice.survival.ready_for_actions: await physics_frame
 	var sim: Node=voice.survival

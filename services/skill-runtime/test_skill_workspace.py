@@ -6,7 +6,13 @@ from development_backend import read_selection,linux_path
 class WorkspaceTests(unittest.TestCase):
     def test_game_owned_artifacts_git_and_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:
+            preconditions={'baseline_participant_behaviors':[{'person':'player','behavior':'follow_actor'}],
+                           'baseline_preconditions':{'origin':{'job':'job_approved'}},'baseline_adjustment':''}
+            (Path(tmp)/'verification_preconditions.json').write_text(json.dumps(preconditions),encoding='utf-8')
             w=Workspace(Path(tmp),{'goal_id':'g','world_operations':[],'character_context':{},'owned_skills':{}},{'source':'return 1','name':'test'},'sdk',{}, {})
+            self.assertEqual(json.loads(w.path('reference/verification_preconditions.json').read_text(encoding='utf-8')),preconditions)
+            self.assertEqual(w.verification_preconditions,preconditions)
+            with self.assertRaises(ValueError):w.path('reference/verification_preconditions.json',write=True)
             self.assertEqual(w.path('reference/principles.md').read_text(encoding='utf-8'),Path(__file__).with_name('authoring_principles.md').read_text(encoding='utf-8'))
             with self.assertRaises(ValueError):w.path('reference/principles.md',write=True)
             (w.root/'source.luau').write_text('return 2')

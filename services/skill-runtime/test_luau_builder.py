@@ -36,10 +36,12 @@ class BuilderTests(unittest.TestCase):
         def backend(workspace,config,deadline,verify,status,cancelled,folder,selection):
             (workspace.root/'source.luau').write_text(self.source,encoding='utf-8')
             (workspace.root/'skill.json').write_text(json.dumps({k:v for k,v in self.value.items() if k!='source'}),encoding='utf-8')
-            verify()
+            self.verify_receipt=verify('run')
             return {'ok':True,**workspace.approved} if workspace.approved else {'ok':False,'error':'not approved'}
         def review(*_,**__):
             if cancel:(self.folder/'cancelled').touch()
+            motion=self.folder/'motion_1';motion.mkdir(exist_ok=True)
+            (motion/'replay_budget.json').write_text(json.dumps({'planned_invocations':7,'timeout_seconds':123,'scene_timeout_seconds':113,'semantic_reserve_seconds':195}))
             return {'passed':passed,'owner':'skill','issues':[] if passed else ['not released']}
         with patch.object(development_backend,'ensure_available'),patch.object(builder,'ROOT',self.root),patch.object(builder,'prepare_outcomes') as planner,patch.object(builder,'review',side_effect=review) as reviewer,patch.object(development_backend,'run',side_effect=backend):
             result=builder.execute(self.folder,self.request)
@@ -52,7 +54,56 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(json.loads(package['definition']['program_json'])['source'],self.source)
         self.assertEqual(len(package['receipt']['development_commit']),40)
         self.assertTrue((self.folder/'workspace/.git').is_dir())
+        self.assertEqual(self.verify_receipt['replay_budget']['timeout_seconds'],123,"run应返回实际回放收据，不能在结束后重算")
         self.assertEqual((self.folder/'workspace/source.luau').read_text(),self.source)
+
+    def test_inspection_reads_latest_workspace_plan_without_commit_or_attempt(self):
+        from unittest.mock import patch
+        self.request['verification_snapshot']={'person_id':'self','observations':{'self':{}}}
+        preconditions={'baseline_participant_behaviors':[{'person':'player','behavior':'follow_actor'}],
+                       'baseline_preconditions':{'origin':{'job':'job_approved'}},'baseline_adjustment':''}
+        (self.folder/'verification_preconditions.json').write_text(json.dumps(preconditions),encoding='utf-8')
+        def backend(workspace,config,deadline,verify,status,cancelled,folder,selection):
+            proposal={k:v for k,v in self.value.items() if k!='source'}
+            step={'conditions':[],'arguments':self.value['test_arguments']}
+            proposal['verification_cases']=[{'name':'continued','steps':[step,step]}]
+            (workspace.root/'source.luau').write_text(self.source,encoding='utf-8')
+            (workspace.root/'skill.json').write_text(json.dumps(proposal),encoding='utf-8')
+            (folder/'verification_cases.json').write_text(json.dumps([{'steps':[{}]*12}]))
+            original_commit=workspace.git('rev-parse','HEAD');count=workspace.test_count
+            first=verify('inspect')
+            self.assertEqual(first['verification_preconditions'],preconditions)
+            self.assertEqual(first['planned_invocations'],3);self.assertTrue(first['can_start'])
+            self.assertEqual(first['remaining_tests'],builder.POLICY['attempts'])
+            proposal['verification_cases']=[]
+            (workspace.root/'skill.json').write_text(json.dumps(proposal),encoding='utf-8')
+            with patch.object(builder.time,'monotonic',return_value=deadline-200):
+                second=verify('inspect')
+            self.assertEqual(second['planned_invocations'],1);self.assertFalse(second['can_start'])
+            self.assertEqual(second['verification_preconditions'],preconditions)
+            self.assertEqual(second['remaining_seconds'],200)
+            self.assertEqual(workspace.git('rev-parse','HEAD'),original_commit)
+            self.assertEqual(workspace.test_count,count);self.assertIsNone(workspace.approved)
+            self.assertFalse((folder/'candidate_definition.json').exists())
+            return {'ok':False,'error':'fixture inspect only'}
+        with patch.object(development_backend,'ensure_available'),patch.object(builder,'ROOT',self.root),patch.object(builder,'prepare_outcomes'),patch.object(builder,'review') as replay,patch.object(development_backend,'run',side_effect=backend):
+            self.assertEqual(builder.execute(self.folder,self.request),1)
+        replay.assert_not_called()
+
+    def test_verification_cases_bound_to_commit_but_not_world_permissions(self):
+        self.request['verification_snapshot']={'person_id':'a','people':{'a':{}},'objects':{'bag':{'holder':'a'}},'containers':{'bag':[{}]},'observations':{'a':{}}}
+        cases=[{'name':'empty','steps':[{'conditions':[{'kind':'consume_to_quantity','object':'bag','quantity':0}],'arguments':{'object':'bag'}}]}]
+        self.value['verification_cases']=cases
+        result,_,_=self.execute()
+        self.assertEqual(result,0)
+        self.assertEqual(json.loads((self.folder/'verification_cases.json').read_text()),cases)
+        package=json.loads((self.folder/'package.json').read_text())
+        self.assertNotIn('verification_cases',package['definition'])
+        self.assertEqual(json.loads(package['definition']['program_json'])['capabilities'],['release'])
+        commit=package['receipt']['development_commit']
+        from skill_workspace import Workspace
+        w=object.__new__(Workspace);w.root=self.folder/'workspace'
+        self.assertEqual(json.loads(w.git('show',commit+':skill.json'))['verification_cases'],cases)
 
     def test_revision_continues_draft_but_keeps_accepted_review_baseline(self):
         original,_,_=builder.candidate(self.value,self.request)
@@ -71,6 +122,16 @@ class BuilderTests(unittest.TestCase):
     def test_failed_review_cannot_publish(self):
         result,_,_=self.execute(passed=False)
         self.assertEqual(result,1);self.assertFalse((self.folder/'package.json').exists())
+
+    def test_existing_candidate_recheck_uses_full_policy_and_still_needs_approval(self):
+        definition,_,_=builder.candidate(self.value,self.request)
+        (self.folder/'build_request.json').write_text(json.dumps(self.request))
+        (self.folder/'candidate_definition.json').write_text(json.dumps(definition))
+        (self.folder/'source.luau').write_text(self.source)
+        with patch.object(builder,'ROOT',self.root),patch.object(builder,'prepare_outcomes'),patch.object(builder.time,'monotonic',return_value=1000),patch.object(builder,'review',return_value={'passed':False,'owner':'skill','issues':['未批准']}) as reviewer:
+            self.assertEqual(builder.verify_existing(self.folder),1)
+        self.assertEqual(reviewer.call_args.kwargs['deadline'],1000+builder.POLICY['budget_seconds'])
+        self.assertFalse((self.folder/'package.json').exists())
 
     def test_cancellation_during_review_cannot_publish(self):
         result,_,_=self.execute(cancel=True)

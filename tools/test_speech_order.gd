@@ -8,6 +8,7 @@ func _run() -> void:
 	var voice:=Voice.new()
 	scene.add_child(voice)
 	voice.config.autonomy_enabled=false
+	voice.config.tts_enabled=true # 本测试使用 FakeTTS，不访问语音服务。
 	voice.survival.enabled=false
 	voice.tts.queue_free()
 	voice.tts=TtsTest.FakeTTS.new()
@@ -15,6 +16,8 @@ func _run() -> void:
 	voice.busy=true
 	voice._job_config={"tts_enabled":true,"actions_enabled":false}
 	voice._speech_order=["person_003","person_001"]
+	for id in voice._speech_order:
+		voice.store.hear(id,{"id":"order","kind":"player_speech","speaker":"player","text":"请依次回应","listeners":[id]})
 	var decision:={"intent":"none","private_interpretation":"顺序测试","public_reply":"后问的石头","speech_style":"neutral","routing_reason":"夹具"}
 	voice.store.remember("person_001","order",decision)
 	voice._on_report({"person_id":"person_001","person_name":"石头","event_id":"order","calls":[],"decision":decision.duplicate(true)})

@@ -28,8 +28,8 @@ func _label(box: VBoxContainer, size: int, lines: int) -> Label:
 	label.text_overrun_behavior=TextServer.OVERRUN_TRIM_ELLIPSIS
 	box.add_child(label);return label
 
-func update_content(name_text: String, status_text: String, speech_text: String, compact: bool=false) -> void:
-	title.text=name_text if compact else name_text+" · E 详情"
+func update_content(name_text: String, status_text: String, speech_text: String, compact: bool=false, focused: bool=true) -> void:
+	title.text=name_text+(" · E 详情" if focused and not compact else "")
 	status.text=status_text;status.visible=not compact and not status_text.is_empty()
 	speech.text=speech_text;speech.visible=not compact and not speech_text.is_empty()
 	var width:=720
@@ -49,3 +49,15 @@ func update_content(name_text: String, status_text: String, speech_text: String,
 	if view.size!=Vector2i(width,height):
 		view.size=Vector2i(width,height);panel.size=Vector2(width,height)
 		sprite.position.y=height*0.002/2.0
+
+func screen_rect(camera: Camera3D) -> Rect2:
+	if not is_visible_in_tree() or camera.is_position_behind(sprite.global_position):return Rect2()
+	# billboard朝向由渲染器决定，不能用人物原朝向投影矩形；这里只读世界尺寸。
+	var dimensions:=Vector2(view.size)*sprite.pixel_size
+	var world_scale:=sprite.global_basis.get_scale()
+	var right:=camera.global_basis.x*dimensions.x*world_scale.x*.5
+	var up:=camera.global_basis.y*dimensions.y*world_scale.y*.5
+	var low:=Vector2(INF,INF);var high:=Vector2(-INF,-INF)
+	for corner in [sprite.global_position-right-up,sprite.global_position+right-up,sprite.global_position-right+up,sprite.global_position+right+up]:
+		var point:=camera.unproject_position(corner);low=low.min(point);high=high.max(point)
+	return Rect2(low,high-low).intersection(get_viewport().get_visible_rect())

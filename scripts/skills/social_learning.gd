@@ -29,6 +29,12 @@ func public_decision(speaker: String, event: Dictionary, decision: Dictionary, a
 			_feedback(speaker,event,action.goal_id,"当前正在忙，尚未开始求教。")
 			return
 		var original: Dictionary=event.get("original_event",event).duplicate(true)
+		if decision.get("task_handling",{}).get("scope","")=="existing_request":
+			var existing: Dictionary=store.working_tasks.get(speaker,{}).get("request",{})
+			if existing.is_empty():
+				_feedback(speaker,event,action.goal_id,"此前任务已经不在，请依据当前情况重新决定是否求教。")
+				return
+			original=existing.duplicate(true)
 		var request_id:=ticket+"/lesson"
 		pending[request_id]={"student":speaker,"teacher":target,"goal":action.goal_id,"original":original,"elapsed":0.0}
 		sim.actors[speaker].stage="skill_wait_teacher"
@@ -36,10 +42,33 @@ func public_decision(speaker: String, event: Dictionary, decision: Dictionary, a
 		event_ready.emit({"id":request_id,"kind":"skill_lesson_request","speaker":speaker,"listeners":[target],"text":decision.public_reply,"goal_id":action.goal_id,"student_id":speaker,"lesson_request_id":request_id})
 		changed.emit({"type":"lesson_requested","person_id":speaker,"teacher":target,"message":"求教已被听见，等待对方自己决定"})
 		return
+	var ref:=""
+	if action.kind=="teach":
+		# 求教目标由学生表达，不能当作老师的方法ID；老师明确选择本人掌握的精确版本。
+		ref=action.ref
+		if skills.library.resolve(speaker,ref).is_empty():
+			_feedback(speaker,event,action.goal_id,"这次尚未开始教学：所选方法已不在本人掌握的版本中，请重新选择。")
+			return
+		if sim.actors[speaker].stage!="idle":
+			_feedback(speaker,event,action.goal_id,"当前不能授课，尚未开始教学，原求教仍保留。")
+			return
 	var request_id: String=event.get("lesson_request_id","")
-	if not pending.has(request_id): return
+	if not pending.has(request_id):
+		if request_id.is_empty() and action.kind=="teach":
+			# 主动授课先是被实际听见的邀请；学生仍需自行求教，老师再同意。
+			# 只发公开内容，不能把老师的原任务、私下理解或技能实现传给学生。
+			for listener in audience:
+				store.remember_skill(listener,speaker,action.goal_id,"claim",store.people[speaker].name+"亲口表示愿意教",str(event.id))
+			_save_knowledge()
+			event_ready.emit({"id":ticket+"/lesson_offer","kind":"skill_lesson_offer","speaker":speaker,"listeners":[target],"text":decision.public_reply,"goal_id":action.goal_id})
+			changed.emit({"type":"lesson_offered","person_id":speaker,"student":target,"message":"公开邀请已被听见，等待对方自己决定是否求教"})
+			return
+		_feedback(speaker,event,action.goal_id,"这次求教已结束或不存在，尚未开始教学，请依据当前情况重新决定。")
+		return
 	var request: Dictionary=pending[request_id]
-	if request.teacher!=speaker or request.student!=target or request.goal!=action.goal_id: return
+	if request.teacher!=speaker or request.student!=target or request.goal!=action.goal_id:
+		_feedback(speaker,event,action.goal_id,"求教对象或技能与这次答复不匹配，原求教仍保留，请重新判断。")
+		return
 	pending.erase(request_id)
 	if action.kind=="decline":
 		_release(target)
@@ -48,19 +77,13 @@ func public_decision(speaker: String, event: Dictionary, decision: Dictionary, a
 	for listener in audience:
 		store.remember_skill(listener,speaker,request.goal,"claim",store.people[speaker].name+"亲口表示愿意教",str(event.id))
 	_save_knowledge()
-	var ref:=""
-	for item in skills.library.describe(speaker):
-		if skills.library.definitions[item.ref].id==request.goal: ref=item.ref;break
-	if ref=="" or sim.actors[speaker].stage!="idle" or not nearby(speaker,target):
-		_release(target)
-		_feedback(target,request.original,request.goal,"这次没有真正开始教学，对方没有可传授的对应技能或当前不能授课。")
-		return
 	# 当前不自动赋予复合技能的全部依赖，避免越过独立学习。
 	for dependency in skills.library.definitions[ref].get("dependencies",{}).values():
 		if skills.library.resolve(target,dependency).is_empty():
 			_release(target);_feedback(target,request.original,request.goal,"还缺少这项技能要求的基础技能，本次教学未开始。")
 			return
-	sessions[request_id]=request.merged({"ref":ref,"elapsed":0.0})
+	# 等待答复的时间不计入双方实际授课时长。
+	sessions[request_id]=request.merged({"ref":ref,"elapsed":0.0},true)
 	sim.actors[speaker].stage="skill_teaching";sim.actors[target].stage="skill_studying"
 	store.people[speaker]["learning"]={"message":"正在教"+store.people[target].name,"state":"teaching"}
 	store.people[target]["learning"]={"message":"正在跟"+store.people[speaker].name+"学习","state":"studying"}
@@ -117,7 +140,7 @@ func reset() -> void:
 	seen.clear()
 
 func _save_knowledge() -> void:
-	var error: String=store.memory.save()
+	var error: String=store.memory.request_save()
 	if error!="": changed.emit({"type":"error","message":error})
 
 func load_knowledge() -> void:

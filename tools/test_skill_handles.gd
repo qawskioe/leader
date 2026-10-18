@@ -17,6 +17,10 @@ func _initialize() -> void:
 	var decision:={"skill_call":{"ref":"skill_2","arguments":{"object":"basket/1"}},"revision_request":null}
 	Handles.resolve(decision,mapping)
 	assert(decision.skill_call.ref=="take@modified" and decision.skill_call.arguments.object=="basket/1")
+	var teaching:={"skill_dialogue":{"kind":"teach","goal_id":"student_requested_topic","ref":"skill_2"}}
+	Handles.resolve(teaching,mapping)
+	assert(teaching.skill_dialogue.ref=="take@modified" and teaching.skill_dialogue.goal_id=="student_requested_topic","授课精确还原本人选定版本，求教目标不被方法ID替换")
+	Handles.resolve({"skill_dialogue":{"kind":"ask","goal_id":"student_requested_topic"}},mapping)
 	var other:={"available_skills":[{"ref":"other@123"}]}
 	var another:=Handles.bind(other,{})
 	assert(another.skill_1!=mapping.skill_1 and not mapping.has("take@abcde"),"不同人物/请求不能共用句柄或猜测相近哈希")

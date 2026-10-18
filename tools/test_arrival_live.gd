@@ -5,7 +5,7 @@ func _run() -> void:
 	var scene: Node3D=load("res://scenes/initial_base.tscn").instantiate()
 	root.add_child(scene)
 	var voice:=Voice.new(); voice.name="VoiceTest"; scene.add_child(voice)
-	voice.config.local_only=false; voice.config.autonomy_enabled=true; voice.config.actions_enabled=true; voice.config.tts_enabled=true
+	voice.config.local_only=false; voice.config.autonomy_enabled=true; voice.config.actions_enabled=true; voice.config.tts_enabled=false
 	voice.menu.close()
 	while not voice.survival.ready_for_actions: await physics_frame
 	voice.reset_gather_scenario()

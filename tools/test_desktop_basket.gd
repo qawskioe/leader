@@ -1,6 +1,7 @@
 extends SceneTree
 func _initialize() -> void: run.call_deferred()
 func run() -> void:
+	create_timer(15).timeout.connect(func():push_error("desktop basket timeout");quit(1))
 	var scene: Node3D=load("res://scenes/initial_base.tscn").instantiate();root.add_child(scene)
 	var store=load("res://scripts/voice/people_store.gd").new();assert(store.initialize().is_empty())
 	var sim=load("res://scripts/survival/simulation.gd").new();sim.scene=scene;sim.store=store;sim.enabled=false;scene.add_child(sim)
@@ -11,7 +12,7 @@ func run() -> void:
 	var basket: Dictionary=gather.baskets["1"]
 	player.global_position=basket.root.global_position+Vector3(0,0,1.1)
 	var fruit: MeshInstance3D=sim._fruit();scene.add_child(fruit)
-	gather.hands.player={"visual":fruit,"origin":{"resource_id":"fixture_fruit"},"hand":"Hand.R"}
+	gather.hands.player={"material":"food","visual":fruit,"origin":{"resource_id":"fixture_fruit"},"hand":"Hand.R"}
 	assert(gather.load_hand("player","1"))
 	await physics_frame
 	camera.look_at(fruit.global_position)

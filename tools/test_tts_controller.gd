@@ -33,6 +33,8 @@ func _run() -> void:
 		scene.add_child(voice)
 	voice.store.memory.path = "user://voice_tests/tts_controller_fixture_memory.json"
 	voice.config.actions_enabled = false
+	voice.config.autonomy_enabled = false
+	voice.config.tts_enabled = true # 本测试使用 FakeTTS，不访问语音服务。
 	voice.survival.enabled = false
 	voice.tts.queue_free()
 	var fake := FakeTTS.new()

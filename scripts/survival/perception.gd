@@ -6,7 +6,13 @@ var memories: Dictionary={}
 var revisions: Dictionary={}
 var revision_positions: Dictionary={}
 const SIGNIFICANT_MOVE_M:=0.25
+const VIEW_DISTANCE_M:=10.0
+const VIEW_HALF_ANGLE_DEGREES:=80.0
+const PERSON_VISIBLE_HEIGHTS: Array[float]=[1.2,1.6]
 var clock:=0.0
+static func vision_rules() -> Dictionary:
+	return {"range_m":VIEW_DISTANCE_M,"half_angle_degrees":VIEW_HALF_ANGLE_DEGREES,"direction":"人物身体朝向的本地+Z","occlusion":"实际碰撞射线","meaning":"转身会改变当前视野；离开视野的记录保留为旧线索，不更新目标位置。"}
+
 func seed_arrival(ids: Array) -> void:
 	clock=sim.store.memory.clock
 	for id in ids:revision_positions[id]={}
@@ -32,10 +38,16 @@ func sees(id: String, at: Vector3, target: RID=RID()) -> bool:
 	var body: Node3D=sim.actors[id].body
 	var eye:=body.global_position+Vector3(0,1.6,0)
 	var offset:=at-eye
-	if offset.length()>10 or body.global_basis.z.angle_to(offset)>deg_to_rad(80): return false
+	if offset.length()>VIEW_DISTANCE_M or body.global_basis.z.angle_to(offset)>deg_to_rad(VIEW_HALF_ANGLE_DEGREES): return false
 	var exclude: Array[RID]=[body.get_rid(),sim.scene.get_node("Player").get_rid()]
 	if target.is_valid(): exclude.append(target)
 	return sim.scene.get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(eye,at,1,exclude)).is_empty()
+
+func sees_person(id: String, body: Node3D) -> bool:
+	# 普通身体近似：胸或头有一个点实际可见即可识别人；每个点独立通过视锥、距离和遮挡。
+	for height in PERSON_VISIBLE_HEIGHTS:
+		if sees(id,body.global_position+Vector3.UP*height):return true
+	return false
 
 func _record(id: String, key: String, kind: String, at: Vector3, available: bool, extra: Dictionary={}) -> void:
 	var previous: Dictionary=memories[id].get(key,{})
@@ -66,12 +78,6 @@ func observe(id: String) -> void:
 		_record(id,"storage","storage",sim.STORAGE,sim.storage_food>0,{"food_count":sim.storage_food})
 	if is_instance_valid(sim.water):
 		if sees(id,sim.water.SOURCE+Vector3(0,0.4,0)): _record(id,"water_source","water_source",sim.water.SOURCE,true)
-	for key in sim.gathering.baskets:
-		var basket: Dictionary=sim.gathering.baskets[key]
-		if basket.holder==id: continue
-		var at: Vector3=basket.root.global_position
-		if sees(id,at+Vector3(0,0.4,0),basket.body.get_rid()):
-			_record(id,"basket/"+key,"basket",at,basket.holder=="",{"food_count":basket.contents.count,"contents":basket.contents.describe()})
 	for key in sim.gathering.resources:
 		var fruit: Dictionary=sim.gathering.resources[key]
 		var at: Vector3=fruit.mesh.global_position
@@ -79,14 +85,18 @@ func observe(id: String) -> void:
 	for other in sim.actors:
 		if other==id: continue
 		var at: Vector3=sim.actors[other].body.global_position
-		if sees(id,at+Vector3(0,1.2,0)): _record(id,"person/"+other,"person",at,true)
+		if sees_person(id,sim.actors[other].body): _record(id,"person/"+other,"person",at,true,{"name":sim.store.people[other].name})
 	var player: Node3D=sim.scene.get_node("Player")
-	if sees(id,player.global_position+Vector3(0,1.2,0)): _record(id,"person/player","person",player.global_position,true)
+	if sees_person(id,player): _record(id,"person/player","person",player.global_position,true)
 	if is_instance_valid(world_objects):
 		for key in world_objects.objects:
 			var object: Dictionary=world_objects.objects[key]
 			var at: Vector3=world_objects.grip_position(key)
-			if object.holder==id or sees(id,at,object.body.get_rid()):
+			var visible: bool=object.holder==id or sees(id,at,object.body.get_rid())
+			# 篮体与握持点任一点可见即可识别，但只用通用物品合同记录一次。
+			# 旧篮子/通用两条链轮流写入不同属性，会把静物每帧变成新知识。
+			if not visible and object.kind=="basket":visible=sees(id,object.body.global_position+Vector3.UP*0.4,object.body.get_rid())
+			if visible:
 				_record(id,key,object.kind,at,object.holder=="" or object.holder==id,world_objects.observable_extra(key))
 	if is_instance_valid(world_objects):
 		# 空间锚点来自局部地面查询，交谈只传锚点ID，不向模型灌入全地图。
@@ -118,12 +128,36 @@ func observe(id: String) -> void:
 func known(id: String, key: String) -> Dictionary:
 	return memories.get(id,{}).get(key,{}).duplicate(true)
 
-func hear_voice(id: String, speaker: String, event_id: String, source: Vector3) -> bool:
+func recall_location(id: String, entry: Dictionary) -> void:
+	# 只接收本人实际选中的长期地标；保留旧坐标/时间，不查询物体当前状态。
+	var previous: Dictionary=memories[id].get(entry.id,{})
+	if not previous.is_empty():
+		var previous_time: float=maxf(previous.observed_at_seconds,previous.get("last_place_checked_at_seconds",-1.0))
+		var recalled_time: float=maxf(entry.observed_at_seconds,entry.get("last_place_checked_at_seconds",-1.0))
+		if previous.get("visible_now",false) or previous_time>=recalled_time:return
+	var recalled:=entry.duplicate(true)
+	recalled["visible_now"]=false
+	memories[id][entry.id]=recalled
+	sim.store.memory.note_observation(id,recalled)
+
+func hear_voice(id: String, speaker: String, event_id: String, source: Vector3, heard_at_seconds: float=-1.0, speaker_name: String="") -> bool:
 	var key:="person/"+speaker
-	if memories.get(id,{}).get(key,{}).get("visible_now",false): return false
+	var previous: Dictionary=memories.get(id,{}).get(key,{})
+	if previous.get("visible_now",false): return false
+	var heard_time:=clock if heard_at_seconds<0 else heard_at_seconds
+	if not previous.is_empty() and maxf(previous.observed_at_seconds,previous.get("last_place_checked_at_seconds",-1.0))>heard_time:return false
 	# 只在真正听见公开台词后调用。声源给粗略线索，不能获得视觉细节或持续追踪。
-	var estimate:=(source-Vector3.UP*1.6).snapped(Vector3.ONE*2.0)
-	var entry:={"id":key,"kind":"person","position":[estimate.x,estimate.y,estimate.z],"available":true,"visible_now":false,"source":"听到本人说话，粗略声源位置，尚未目视核实","observed_at_seconds":clock,"heard_at_seconds":clock,"heard_from":speaker,"source_event_id":event_id,"position_error_per_axis_m":2.0,"extra":{}}
+	# 从听者自身粗化相对位移：固定两米全局网格会把近处身后的声音翻到身前。
+	# 误差随距离增大，保留听觉方位；这里只估计原声源，不查询说话者当前身体或物品。
+	var listener: Vector3=sim.actors[id].body.global_position
+	var offset:=source-Vector3.UP*1.6-listener
+	var step:=clampf(Vector2(offset.x,offset.z).length()*0.1,0.05,2.0)
+	var estimate:=listener+offset.snapped(Vector3.ONE*step)
+	# 已识别的说话者沿用交谈的姓名；听声不携带旧视觉细节或物品信息。
+	var identity: Dictionary={}
+	var known_name: String=speaker_name if not speaker_name.is_empty() else str(previous.get("extra",{}).get("name",""))
+	if not known_name.is_empty():identity["name"]=known_name
+	var entry:={"id":key,"kind":"person","position":[estimate.x,estimate.y,estimate.z],"available":true,"visible_now":false,"source":"听到本人说话，粗略声源位置，尚未目视核实","observed_at_seconds":heard_time,"heard_at_seconds":heard_time,"heard_from":speaker,"source_event_id":event_id,"position_error_per_axis_m":maxf(0.15,step),"extra":identity}
 	if not memories.has(id): memories[id]={}
 	memories[id][key]=entry
 	sim.store.memory.note_observation(id,entry)

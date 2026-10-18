@@ -67,12 +67,12 @@ static func validate_decision(text: String, require_social_fields: bool = false,
 	if data.get("intent") not in Catalog.IDS:
 		return {"ok":false,"error":"缺少有效的行动意图 intent"}
 	if data.has("task_status") and data.task_status not in ["active","completed","cancelled","none"]: return {"ok":false,"error":"task_status必须为active/completed/cancelled/none"}
-	if data.get("task_status") in ["completed","cancelled"] and (data.get("skill_call")!=null or data.get("intent","none")!="none"): return {"ok":false,"error":"结束任务不能同时提交新动作"}
+	if data.get("task_status") in ["completed","cancelled"] and (data.get("skill_call")!=null or (data.get("intent","none")!="none" and not _selected_stop_state(data,"cancelled"))): return {"ok":false,"error":"结束任务不能同时提交新动作"}
 	if not data.has("skill_call"): data.skill_call=null
 	if data.skill_call!=null:
 		if not data.skill_call is Dictionary or data.skill_call.size()!=2 or not data.skill_call.get("ref") is String or data.skill_call.ref.is_empty() or data.skill_call.ref.length()>160 or not data.skill_call.get("arguments") is Dictionary or data.skill_call.arguments.size()>16:
 			return {"ok":false,"error":"技能调用必须包含 ref 和 arguments"}
-		if data.intent!="none": return {"ok":false,"error":"同轮不能同时调用技能与取消动作"}
+		# rest+skill_call是明确的顺序替换：旧控制排空后才调用下一方法。
 		for key in data.skill_call.arguments:
 			var value: Variant=data.skill_call.arguments[key]
 			# 此层只检查引用形状；距离权限由实际世界操作决定，远处参照物也可用于转头观察。
@@ -88,8 +88,12 @@ static func validate_decision(text: String, require_social_fields: bool = false,
 	if not data.has("skill_dialogue"): data.skill_dialogue=null
 	if data.skill_dialogue!=null:
 		var action: Variant=data.skill_dialogue
-		if not action is Dictionary or action.size()!=4 or action.get("kind") not in ["ask","teach","decline"] or not action.get("person_id") is String or action.person_id.is_empty() or action.person_id.length()>100 or not action.get("goal_id") is String or not action.goal_id.is_valid_identifier() or action.goal_id.length()>80 or not action.get("reason") is String or action.reason.strip_edges().is_empty() or action.reason.length()>400:
+		if not action is Dictionary or action.get("kind") not in ["ask","teach","decline"] or not action.get("person_id") is String or action.person_id.is_empty() or action.person_id.length()>100 or not action.get("goal_id") is String or not action.goal_id.is_valid_identifier() or action.goal_id.length()>80 or not action.get("reason") is String or action.reason.strip_edges().is_empty() or action.reason.length()>400:
 			return {"ok":false,"error":"技能交谈需要 kind/person_id/goal_id/reason"}
+		if action.kind=="teach":
+			if not action.get("ref") is String or action.ref.is_empty() or action.ref.length()>160:
+				return {"ok":false,"error":"授课须填写 skill_dialogue.ref，从本轮本人方法目录选择具体版本；goal_id只关联求教目标。"}
+		if action.size()!=(5 if action.kind=="teach" else 4):return {"ok":false,"error":"技能交谈字段无效：teach另含ref，ask与decline只含kind/person_id/goal_id/reason"}
 		if data.intent!="none" or data.skill_call!=null or data.learning_request!=null or data.get("revision_request")!=null or data.get("offer_response")!=null: return {"ok":false,"error":"求教、授课与其他动作不能同时提交"}
 		if data.public_reply.strip_edges().is_empty() or data.get("addressed_person")!=action.person_id: return {"ok":false,"error":"技能交谈必须有对实际对象说出的台词"}
 	if data.learning_request!=null and data.public_reply.strip_edges().is_empty(): return {"ok":false,"error":"自行学习前需要简短说明打算与理由"}
@@ -158,11 +162,18 @@ static func validate_decision(text: String, require_social_fields: bool = false,
 	return {"ok":true,"decision":data}
 
 ## 任务处置由模型选择；只检查结构自洽，不从台词猜测意图。
+static func _selected_stop_state(data: Dictionary, state: String) -> bool:
+	# 明确停止后的任务状态不需再提交一次判断；不能顺带提交其他入口。
+	var handling: Variant=data.get("task_handling")
+	if not handling is Dictionary or handling.get("state")!=state:return false
+	var valid_scope: bool=handling.get("scope")=="existing_request" or (state=="wait" and handling.get("scope")=="current_request")
+	return valid_scope and data.get("intent")=="rest" and data.get("task_status")==("cancelled" if state=="cancelled" else "active") and data.get("skill_call")==null and data.get("learning_request")==null and data.get("revision_request")==null and data.get("offer_response")==null and data.get("skill_dialogue")==null
+
 static func validate_task_handling(data: Dictionary) -> Dictionary:
 	var handling: Variant=data.get("task_handling")
 	if not handling is Dictionary or handling.size()!=3 or handling.get("scope") not in ["current_request","existing_request","independent"] or handling.get("state") not in ["execute","wait","ask","blocked","completed","refused","cancelled","none"] or not handling.get("reason") is String or handling.reason.strip_edges().is_empty() or handling.reason.length()>400:
 		return {"ok":false,"error":"task_handling需要state、scope和非空reason；scope为current_request/existing_request/independent；state为execute/wait/ask/blocked/completed/refused/cancelled/none"}
-	var action: bool=data.intent!="none" or data.get("skill_call")!=null or data.get("learning_request")!=null or data.get("revision_request")!=null or data.get("offer_response")=="accept" or (data.get("skill_dialogue") is Dictionary and data.skill_dialogue.kind=="teach")
+	var action: bool=(data.intent!="none" and not _selected_stop_state(data,"cancelled") and not _selected_stop_state(data,"wait")) or data.get("skill_call")!=null or data.get("learning_request")!=null or data.get("revision_request")!=null or data.get("offer_response")=="accept" or (data.get("skill_dialogue") is Dictionary and data.skill_dialogue.kind=="teach")
 	var asking: bool=data.speech_act=="request" and not data.addressed_person.is_empty() and not data.public_reply.strip_edges().is_empty()
 	if data.get("offer_response")=="accept" and handling.state!="execute":
 		return {"ok":false,"error":"offer_response=accept本身就是提交接物操作，必须用task_handling.state=execute、task_status=active；intent仍为none。程序会尝试交付，不需要玩家再次确认，不能填wait。交付是否成功以随后结果为准。"}

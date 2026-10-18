@@ -2,6 +2,14 @@ extends Node
 ## 只有回环网关使用 HTTP；上游令牌由 Python 服务持有。
 const KEY_PATH := "res://services/text-gateway/runtime/gateway-key.txt"
 const ENDPOINT := "http://127.0.0.1:18090/game/exchange"
+var _pending: Dictionary={}
+
+func cancel() -> void:
+	for request: HTTPRequest in _pending.keys():
+		_pending[request].cancelled=true
+		request.cancel_request()
+		# cancel_request不发完成信号；明确恢复等待链，才能释放冻结的本人经历。
+		request.request_completed.emit(HTTPRequest.RESULT_REQUEST_FAILED,0,PackedStringArray(),PackedByteArray())
 
 static func config_error() -> String:
 	if not FileAccess.file_exists(KEY_PATH):
@@ -17,18 +25,26 @@ func exchange(payload: Dictionary) -> Dictionary:
 	var key := FileAccess.get_file_as_string(KEY_PATH).strip_edges()
 	if key.is_empty():
 		return {"ok":false,"error":"本机 文字网关 网关密钥为空"}
+	return await _request(ENDPOINT,key,payload)
+
+func _request(endpoint: String, key: String, payload: Dictionary) -> Dictionary:
 	var request := HTTPRequest.new()
 	request.timeout = 165.0
 	request.body_size_limit = 8 * 1024 * 1024
 	request.max_redirects = 0
 	add_child(request)
+	var state:={"cancelled":false}
+	_pending[request]=state
 	var started := Time.get_ticks_msec()
-	var err := request.request(ENDPOINT, PackedStringArray(["Content-Type: application/json","Authorization: Bearer " + key]), HTTPClient.METHOD_POST, JSON.stringify(payload))
+	var err := request.request(endpoint, PackedStringArray(["Content-Type: application/json","Authorization: Bearer " + key]), HTTPClient.METHOD_POST, JSON.stringify(payload))
 	if err != OK:
+		_pending.erase(request)
 		request.queue_free()
 		return {"ok":false,"error":"无法向本地 文字网关 发起请求：%d" % err}
 	var response: Array = await request.request_completed
+	_pending.erase(request)
 	request.queue_free()
+	if state.cancelled:return {"ok":false,"cancelled":true,"error":"人物判断已取消"}
 	if response[0] != HTTPRequest.RESULT_SUCCESS:
 		return {"ok":false,"error":"本地 文字网关 连接失败或超时；请确认 start.cmd 已启动，结果码 %d" % response[0]}
 	if response[1]==422:

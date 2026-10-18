@@ -21,7 +21,7 @@ static func rewrite(value: Variant, mapping: Dictionary) -> void:
 		for entry in value:rewrite(entry,mapping)
 
 static func resolve(decision: Dictionary, mapping: Dictionary) -> void:
-	for field in ["skill_call","revision_request"]:
-		if decision.get(field) is Dictionary:
+	for field in ["skill_call","revision_request","skill_dialogue"]:
+		if decision.get(field) is Dictionary and (field!="skill_dialogue" or decision[field].kind=="teach"):
 			assert(mapping.has(decision[field].ref),"句柄必须先通过本轮目录校验")
 			decision[field].ref=mapping[decision[field].ref]
